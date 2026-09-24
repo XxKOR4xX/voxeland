@@ -32,6 +32,9 @@
       this.sprintActive = false;
       this.lookTouchId = null;
       this.lookLast = null;
+      this.touchCapable = false;
+      this.visible = false;
+      this._pollTimer = null;
     }
     get isTouchDevice() {
       if (/[?&]touch=1/.test(window.location.search)) return true;
@@ -51,22 +54,28 @@
       this.bindJoystick();
       this.bindKeyButtons();
       this.bindMouseButtons();
+      this.bindPauseButton();
       this.bindLook();
       this.bindHotbar();
-      if (this.isTouchDevice) {
-        root.classList.remove("hidden");
-        console.log("[TouchController] visible (touch device or ?touch=1)");
+      this.touchCapable = this.isTouchDevice;
+      if (this.touchCapable) {
+        console.log("[TouchController] active on this device (UI visible only while playing)");
       } else {
-        console.log("[TouchController] hidden (non-touch device). Open index.html?touch=1 to force the touch UI.");
+        console.log("[TouchController] dormant (non-touch device). Open index.html?touch=1 to test in DevTools.");
       }
+      this.visible = false;
+      this.syncVisibility();
+      this._pollTimer = setInterval(this.syncVisibility.bind(this), 120);
       this.attached = true;
       return this;
     }
     detach() {
-      this.resetJoystick();
+      if (this._pollTimer) {
+        clearInterval(this._pollTimer);
+        this._pollTimer = null;
+      }
+      this.releaseAllInputs();
       var i;
-      for (i = 0; i < KEY_BUTTONS.length; i++) this.emitKey(KEY_BUTTONS[i].key, false, KEY_BUTTONS[i].code);
-      for (i = 0; i < MOUSE_BUTTONS.length; i++) this.setMouse(MOUSE_BUTTONS[i], false);
       for (i = 0; i < this._listeners.length; i++) {
         var l = this._listeners[i];
         l.el.removeEventListener(l.type, l.fn, l.opts);
@@ -74,6 +83,34 @@
       this._listeners = [];
       this.attached = false;
       return this;
+    }
+    // The engine mirrors its current scene into window.screen (win.screen =
+    // screen inside changeScene, game.js). The touch UI exists ONLY while
+    // actually playing: menus, pause, inventory and loading keep it hidden.
+    syncVisibility() {
+      var playing = typeof window.screen === "string" && window.screen === "play";
+      var show = playing && this.touchCapable;
+      if (show === this.visible) return;
+      this.visible = show;
+      var root = this.els.root;
+      if (!root) return;
+      if (show) {
+        root.classList.remove("hidden");
+      } else {
+        root.classList.add("hidden");
+        this.releaseAllInputs();
+      }
+    }
+    // Releases every virtual input so nothing stays held when the UI hides.
+    releaseAllInputs() {
+      this.resetJoystick();
+      var i;
+      for (i = 0; i < KEY_BUTTONS.length; i++) {
+        this.emitKey(KEY_BUTTONS[i].key, false, KEY_BUTTONS[i].code);
+      }
+      for (i = 0; i < MOUSE_BUTTONS.length; i++) {
+        this.setMouse(MOUSE_BUTTONS[i], false);
+      }
     }
     // ------------------------------------------------------------- helpers
     addListener(el, type, fn) {
@@ -278,6 +315,23 @@
         })(MOUSE_BUTTONS[i]);
       }
     }
+    // MENU button: opens the pause menu. The engine maps key "p" to
+    // releasePointer() + changeScene("pause") during play. Without this
+    // button there is no way to pause on a real phone (no Escape key).
+    bindPauseButton() {
+      var self = this;
+      var el = document.getElementById("btn-pause");
+      if (!el) return;
+      this.addListener(el, "touchstart", function(e) {
+        e.preventDefault();
+        el.classList.add("pressed");
+        self.emitKey("p", true, "KeyP");
+        self.emitKey("p", false, "KeyP");
+        setTimeout(function() {
+          el.classList.remove("pressed");
+        }, 150);
+      });
+    }
     // ------------------------------------------------------------- look pad
     // Drag anywhere on the game canvas to rotate the camera. Taps are left
     // untouched so menu buttons keep working on mobile.
@@ -296,7 +350,6 @@
         if (self.lookTouchId === null) return;
         var t = self.findTouch(e, self.lookTouchId);
         if (!t) return;
-        var p = window.player;
         var dx = 0;
         var dy = 0;
         if (self.lookLast) {
@@ -304,6 +357,8 @@
           dy = t.clientY - self.lookLast.y;
         }
         self.lookLast = { x: t.clientX, y: t.clientY };
+        if (typeof window.screen !== "string" || window.screen !== "play") return;
+        var p = window.player;
         if (!p) return;
         p.ry += dx * self.lookSensitivity;
         p.rx -= dy * self.lookSensitivity;
