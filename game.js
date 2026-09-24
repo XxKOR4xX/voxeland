@@ -1005,6 +1005,7 @@ function MineKhan() {
 	}
 
 	let screen = "main menu"
+	win.screen = screen
 	let previousScreen = screen
 	function changeScene(newScene) {
 		if (screen === "options") {
@@ -1032,6 +1033,7 @@ function MineKhan() {
 
 		previousScreen = screen
 		screen = newScene
+		win.screen = screen
 		mouseDown = false
 		drawScreens[screen]()
 		Button.draw()
