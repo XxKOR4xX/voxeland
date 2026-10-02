@@ -1,0 +1,427 @@
+
+<!DOCTYPE html>
+<script async src="https://arc.io/widget.min.js#SXrvhKhG"></script>
+<html>
+	<head>
+		<meta charset="utf-8">
+		<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+		<title>VoxeLand</title>
+		<link rel="shortcut icon" type="image/ico" href="https://www.minecraft.net/etc.clientlibs/minecraft/clientlibs/main/resources/favicon.ico">
+	</head>
+	<style>
+    @import url('https://fonts.googleapis.com/css2?family=Poppins:wght@500&display=swap');
+    @font-face {
+      font-family: "Pirata One";
+      src: url("fonts/PirataOne-Regular.ttf") format("truetype");
+      font-weight: 400;
+      font-style: normal;
+      font-display: swap;
+    }
+		body {
+			overflow: hidden; /* Hide scrollbars */
+		}
+		.world-select {
+			width: 99vw;
+			min-width: 300px;
+			height: calc(100vh - 220px);
+			position: absolute;
+			bottom: 120px;
+			overflow-y: auto;
+			background-color: RGBA(0, 0, 0, 0.6);
+			justify-content: center;
+			margin: 0 auto;
+		}
+		.world {
+			width: 250px;
+			height: auto;
+			border: 1px solid black;
+			font-size: 18px;
+			font-family: "Poppins", sans-serif;
+			color: rgb(180, 180, 180);
+			margin: 0 auto;
+			margin-top: 15px;
+			padding: 5px;
+			cursor: pointer;
+		}
+		strong {
+			color: white;
+		}
+		.selected {
+			border: 3px solid white;
+			padding: 3px;
+		}
+		input[type=text] {
+			background-color: black;
+			caret-color: white;
+			border: 2px solid gray;
+			color: white;
+			font-size: 24px;
+			padding-left: 12px;
+		}
+		input[type=text]:focus {
+			border: 2px solid lightgray;
+		}
+		#boxcentertop {
+			z-index: 1;
+			width: 80vw;
+			max-width: 400px;
+			height: 50px;
+			position: relative;
+			top: 30px;
+			display: block;
+			margin: 0 auto;
+		}
+		.hidden {
+			display: none !important;
+		}
+		#onhover {
+			background-color: rgba(0, 0, 0, 0.9);
+			color: rgb(200, 200, 200);
+			font-family: 'Poppins', sans-serif;
+			word-wrap: normal;
+			width: auto;
+			max-width: 400px;
+			position: absolute;
+			z-index: 1;
+			padding: 10px;
+			cursor: default;
+		}
+		#quota {
+			display: block;
+			position: absolute;
+			width: 99vw;
+			margin: 0 auto;
+			bottom: 110px;
+			z-index: 1;
+			background-color: RGBA(0, 0, 0, 0.6);
+			justify-content: center;
+			text-align: center;
+			color: white;
+      font-family: 'Poppins', sans-serif;
+		}
+		/* ==== Touch controls (Bedrock style) ==== */
+		#overlay {
+			touch-action: none;
+		}
+		#touch-ui {
+			position: fixed;
+			inset: 0;
+			z-index: 5;
+			pointer-events: none;
+		}
+		.tctrl {
+			pointer-events: auto;
+			touch-action: none;
+			-webkit-user-select: none;
+			user-select: none;
+			-webkit-tap-highlight-color: transparent;
+		}
+		#joystick-base {
+			position: absolute;
+			left: 20px;
+			bottom: 88px;
+			width: 140px;
+			height: 140px;
+			border-radius: 50%;
+			background: rgba(255, 255, 255, 0.10);
+			border: 2px solid rgba(255, 255, 255, 0.30);
+		}
+		#joystick-thumb {
+			position: absolute;
+			left: 50%;
+			top: 50%;
+			width: 54px;
+			height: 54px;
+			margin: -27px 0 0 -27px;
+			border-radius: 50%;
+			background: rgba(255, 255, 255, 0.35);
+			border: 2px solid rgba(255, 255, 255, 0.55);
+			transition: transform 0.05s linear;
+		}
+		#joystick-thumb.sprint-charging {
+			background: rgba(255, 213, 79, 0.55);
+			border-color: #ffca28;
+		}
+		#joystick-thumb.sprint-on {
+			background: rgba(102, 187, 106, 0.60);
+			border-color: #66bb6a;
+		}
+		.tbtn {
+			position: absolute;
+			border-radius: 50%;
+			display: flex;
+			align-items: center;
+			justify-content: center;
+			font-family: "Poppins", sans-serif;
+			font-size: 11px;
+			color: rgba(255, 255, 255, 0.85);
+			background: rgba(255, 255, 255, 0.16);
+			border: 2px solid rgba(255, 255, 255, 0.35);
+		}
+		.tbtn.pressed {
+			background: rgba(255, 255, 255, 0.45);
+			color: black;
+		}
+		#btn-jump {
+			right: 28px;
+			bottom: 96px;
+			width: 64px;
+			height: 64px;
+		}
+		#btn-sneak {
+			right: 108px;
+			bottom: 66px;
+			width: 52px;
+			height: 52px;
+			font-size: 9px;
+		}
+		#btn-sprint {
+			right: 176px;
+			bottom: 116px;
+			width: 52px;
+			height: 52px;
+			font-size: 9px;
+		}
+		#btn-attack {
+			right: 44px;
+			bottom: 196px;
+			width: 68px;
+			height: 68px;
+		}
+		#btn-place {
+			right: 132px;
+			bottom: 170px;
+			width: 62px;
+			height: 62px;
+		}
+		#btn-pause {
+			left: 50%;
+			transform: translateX(-50%);
+			top: 12px;
+			width: 72px;
+			height: 40px;
+			border-radius: 8px;
+			font-size: 10px;
+		}
+		#btn-chat {
+			left: 12px;
+			top: 12px;
+			width: 64px;
+			height: 40px;
+			border-radius: 8px;
+			font-size: 10px;
+		}
+		#chatbox {
+			position: fixed;
+			bottom: 8px;
+			left: 8px;
+			width: 60%;
+			max-width: 420px;
+			height: 32px;
+			padding: 4px 8px;
+			z-index: 6;
+			font-family: "Poppins", sans-serif;
+			font-size: 16px;
+		}
+		#chatlog {
+			position: fixed;
+			bottom: 76px;
+			left: 8px;
+			max-width: 420px;
+			z-index: 6;
+			pointer-events: none;
+			font-family: "Poppins", sans-serif;
+			font-size: 14px;
+			color: white;
+		}
+		#chathint {
+			position: fixed;
+			bottom: 48px;
+			left: 8px;
+			max-width: 420px;
+			z-index: 6;
+			pointer-events: none;
+			font-family: "Poppins", sans-serif;
+			font-size: 14px;
+			color: #c9c9c9;
+			background-color: rgba(0, 0, 0, 0.45);
+			padding: 3px 8px;
+		}
+		#chatlog div {
+			background-color: rgba(0, 0, 0, 0.45);
+			padding: 3px 8px;
+			margin-top: 2px;
+			width: fit-content;
+		}
+		#btn-inventory {
+			position: absolute;
+			right: 12px;
+			top: 12px;
+			width: 72px;
+			height: 40px;
+			border-radius: 8px;
+			font-size: 10px;
+			z-index: 5;
+		}
+		#ui-entidad {
+			position: fixed;
+			right: 12px;
+			top: 96px;
+			max-width: 300px;
+			z-index: 6;
+			pointer-events: none;
+			font-family: "Poppins", sans-serif;
+			font-size: 13px;
+			color: white;
+			background-color: rgba(0, 0, 0, 0.55);
+			border: 1px solid rgba(255, 255, 255, 0.25);
+			border-radius: 8px;
+			padding: 8px 10px;
+			line-height: 1.45;
+		}
+		#ui-entidad .ui-titulo {
+			font-size: 15px;
+			font-weight: 600;
+			color: #ffe27a;
+			margin-bottom: 2px;
+		}
+		#ui-entidad .ui-seccion {
+			margin-top: 8px;
+			font-size: 11px;
+			letter-spacing: 1px;
+			color: #ffd34d;
+			border-bottom: 1px solid rgba(255, 255, 255, 0.2);
+			padding-bottom: 2px;
+		}
+		#ui-entidad .ui-fila {
+			display: flex;
+			justify-content: space-between;
+			gap: 12px;
+		}
+		#ui-entidad .ui-fila span:last-child {
+			color: #bfe9bf;
+		}
+		#ui-entidad .ui-pista {
+			color: #9fd0ff;
+			font-size: 11px;
+			margin-top: 6px;
+		}
+	</style>
+	<body>
+	<canvas id="overlay" tabindex="0" width="600" height="600" style="position: absolute; top: 0px; left: 0px"></canvas>
+	<input type="text" id="savebox" class="hidden" spellcheck="false" style="position: absolute; top: 10px; left: 10px; z-index: 1;">
+	<input type="text" id="boxcentertop" class="hidden" spellcheck="false">
+	<div id="quota" class="hidden"></div>
+	<div id="onhover" class="hidden"></div>
+	<p id="savedirections" class="hidden" style="position: absolute; top: 40px; left: 10px; z-index: 1; background-color: rgba(255, 255, 255, 0.3);">
+		VoxeLand!
+	</p>
+	<div class="world-select hidden" id="worlds"></div>
+	<p id="message" class="hidden" style="position: absolute; top: 10px; right: 10px; z-index: 1; text-align: right; background-color: rgba(255, 255, 255, 0.3);"></p>
+	<div id="touch-ui" class="hidden">
+		<div id="joystick-base" class="tctrl">
+			<div id="joystick-thumb"></div>
+		</div>
+		<div id="btn-sprint" class="tctrl tbtn">SPRINT</div>
+		<div id="btn-sneak" class="tctrl tbtn">SNEAK</div>
+		<div id="btn-jump" class="tctrl tbtn">JUMP</div>
+		<div id="btn-attack" class="tctrl tbtn">BREAK</div>
+		<div id="btn-place" class="tctrl tbtn">PLACE</div>
+		<div id="btn-pause" class="tctrl tbtn">MENU</div>
+		<div id="btn-chat" class="tctrl tbtn">CHAT</div>
+	</div>
+	<div id="btn-inventory" class="tctrl tbtn hidden">INV</div>
+	<input type="text" id="chatbox" class="hidden" spellcheck="false">
+	<div id="chatlog"></div>
+	<div id="chathint" class="hidden"></div>
+	<div id="ui-entidad" class="hidden"></div>
+	<script>
+		// Code edits will erase the world.
+		// Place save code here to load your world. Make extra sure you got it copied so you don't paste in the wrong thing and delete your world on accident lol
+		var loadString = ""
+	</script>
+	<script type="x-shader/vertex" id="blockVertexShader">
+		attribute vec3  aVertex;
+		attribute vec2  aTexture;
+		attribute float aShadow;
+		varying vec2  vTexture;
+		varying float vShadow;
+		varying float vFog;
+		uniform mat4 uView;
+		uniform float uDist;
+		uniform vec3 uPos;
+
+		void main(void) {
+			vTexture = aTexture;
+			vShadow = aShadow > 0.0 ? aShadow : 1.0;
+			gl_Position = uView * vec4( aVertex, 1.0);
+
+			float range = max(uDist / 5.0, 8.0);
+			vFog = clamp((length(uPos.xz - aVertex.xz) - uDist + range) / range, 0.0, 1.0);
+		}
+	</script>
+	<script type="x-shader/fragment" id="blockFragmentShader">
+		#ifdef GL_FRAGMENT_PRECISION_HIGH
+			precision highp float;
+		#else
+			precision mediump float;
+		#endif
+
+		uniform sampler2D uSampler;
+		varying float vShadow;
+		varying vec2 vTexture;
+		varying float vFog;
+
+		vec4 fog(vec4 color) {
+			color.r += (0.33 - color.r) * vFog;
+			color.g += (0.54 - color.g) * vFog;
+			color.b += (0.72 - color.b) * vFog;
+			return color;
+		}
+
+		void main(void){
+			vec4 color = texture2D(uSampler, vTexture);
+			gl_FragColor = fog(vec4(color.rgb * vShadow, color.a));
+			if (gl_FragColor.a == 0.0) discard;
+		}
+	</script>
+	<script type="x-shader/vertex" id="2dVertexShader">
+		attribute vec2 aVertex;
+		attribute vec2 aTexture;
+		attribute float aShadow;
+		varying vec2 vTexture;
+		varying float vShadow;
+
+		void main(void) {
+			vTexture = aTexture;
+			vShadow = aShadow;
+			gl_Position = vec4(aVertex, 0.5, 1.0);
+		}
+	</script>
+	<script type="x-shader/fragment" id="2dFragmentShader">
+		#ifdef GL_FRAGMENT_PRECISION_HIGH
+			precision highp float;
+		#else
+			precision mediump float;
+		#endif
+
+		uniform sampler2D uSampler;
+		varying vec2 vTexture;
+		varying float vShadow;
+
+		void main(void) {
+			vec4 color = texture2D(uSampler, vTexture);
+			gl_FragColor = vec4(color.rgb * vShadow, color.a);
+			if (gl_FragColor.a == 0.0) discard;
+		}
+	</script>
+<!-- ?v= es un cache-buster: sin el, un Ctrl+F5 normal puede servir una copia
+     antigua de identidades.js y la vaca se queda con el sombreado anterior.
+     Sube el numero cuando cambies cualquiera de estos ficheros. -->
+<script src="biome-params.js?v=20260929"></script>
+<script src="glb.js?v=20260929b"></script>
+<script src="identidades.js?v=20261006"></script>
+<script src="game.js?v=20261008e"></script>
+<script src="touch.js?v=20261008e"></script>
+</body>
+</html>

@@ -1,0 +1,14 @@
+# Modelo de 182 MB: GitHub rechaza archivos de mas de 100 MB.
+# Se queda en local; no forma parte del juego (solo se usa COW.glb).
+models/HORSE_REAL.glb
+
+# Artefactos de desarrollo
+__pycache__/
+*.pyc
+tools/_cow*.png
+*.rar
+
+# SO
+Thumbs.db
+Desktop.ini
+.DS_Store
