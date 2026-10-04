@@ -1,0 +1,31 @@
+{
+  "tile_size": 16,
+  "variants_per_block": 8,
+  "columns": 8,
+  "rows": {
+    "dirt": 0,
+    "stone": 1,
+    "grass_top": 2,
+    "grass_side": 3,
+    "cobblestone": 4,
+    "sand": 5,
+    "gravel": 6,
+    "snow": 7,
+    "bedrock": 8,
+    "obsidian": 9,
+    "planks": 10,
+    "log_side": 11,
+    "log_top": 12,
+    "leaves": 13,
+    "bricks": 14,
+    "glass": 15,
+    "coal_ore": 16,
+    "iron_ore": 17,
+    "gold_ore": 18,
+    "diamond_ore": 19,
+    "redstone_ore": 20,
+    "water": 21,
+    "lava": 22
+  },
+  "note": "tile (col=variante, row=bloque) en x=col*16, y=row*16. Cada variante es tileable. Elige variante y rotacion/espejo al azar por bloque (ver variantPixel en procedural_blocks.js)."
+}

@@ -5,7 +5,7 @@
 	<head>
 		<meta charset="utf-8">
 		<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-		<title>VoxeLand</title>
+		<title>VoxeLand 0.1 Alpha</title>
 		<link rel="shortcut icon" type="image/ico" href="https://www.minecraft.net/etc.clientlibs/minecraft/clientlibs/main/resources/favicon.ico">
 	</head>
 	<style>
@@ -223,6 +223,61 @@
 			font-family: "Poppins", sans-serif;
 			font-size: 16px;
 		}
+		/* Zonas de escritura del libro (portada + dos hojas): inputs
+		   transparentes sobre el papel pergamino del sprite.  La
+		   posicion y el tamano exactos los fija drawBook() (recien
+		   dibujado el libro); aqui solo el estilo.  Pirata One en las
+		   tres (peticion expresa), tinta marron oscura sobre el
+		   pergamino.  Los ids van sin guiones porque el juego los lee
+		   con getElementById. */
+		#bookcover, #bookpageL, #bookpageR {
+			position: fixed;
+			z-index: 6;
+			border: none;
+			outline: none;
+			resize: none;
+			background: transparent;
+			overflow: hidden;
+			padding: 2px 4px;
+			margin: 0;
+			font-family: "Pirata One", cursive;
+			color: #5b3a22;
+			line-height: 1.3;
+			caret-color: #5b3a22;
+		}
+		/* Portada: el titulo se escribe centrado en la etiqueta */
+		#bookcover {
+			text-align: center;
+		}
+		#bookcover::placeholder, #bookpageL::placeholder, #bookpageR::placeholder {
+			color: rgba(91, 58, 34, 0.45);
+		}
+		#bookcover[readonly], #bookpageL[readonly], #bookpageR[readonly] {
+			color: #5b3a22;
+			caret-color: transparent;
+		}
+		/* Mini-input de nombre de capitulo: HTML sobre el canvas, justo
+		   bajo la pestana en edicion (la posicion la fija
+		   openBookChapterName).  Pirata One, texto beige sobre panel
+		   oscuro como el resto del HUD. */
+		#bookchapter {
+			position: fixed;
+			z-index: 7;
+			border: 1px solid rgba(255, 255, 230, 0.4);
+			background: rgba(22, 18, 14, 0.92);
+			color: rgb(216, 214, 192);
+			font-family: "Pirata One", cursive;
+			font-size: 14px;
+			padding: 3px 6px;
+			margin: 0;
+			outline: none;
+			border-radius: 4px;
+			text-align: center;
+			caret-color: rgb(216, 214, 192);
+		}
+		#bookchapter::placeholder {
+			color: rgba(216, 214, 192, 0.45);
+		}
 		#chatlog {
 			position: fixed;
 			bottom: 76px;
@@ -332,6 +387,10 @@
 	</div>
 	<div id="btn-inventory" class="tctrl tbtn hidden">INV</div>
 	<input type="text" id="chatbox" class="hidden" spellcheck="false">
+	<input type="text" id="bookcover" class="hidden" spellcheck="false" maxlength="32" placeholder="Titulo...">
+	<textarea id="bookpageL" class="hidden" spellcheck="false" maxlength="256" placeholder="Escribe aqui..."></textarea>
+	<textarea id="bookpageR" class="hidden" spellcheck="false" maxlength="256"></textarea>
+	<input type="text" id="bookchapter" class="hidden" spellcheck="false" maxlength="14" placeholder="Nombre del capitulo">
 	<div id="chatlog"></div>
 	<div id="chathint" class="hidden"></div>
 	<div id="ui-entidad" class="hidden"></div>
@@ -420,8 +479,9 @@
      Sube el numero cuando cambies cualquiera de estos ficheros. -->
 <script src="biome-params.js?v=20260929"></script>
 <script src="glb.js?v=20260929b"></script>
-<script src="identidades.js?v=20261006"></script>
-<script src="game.js?v=20261008e"></script>
+<script src="png/blocks/procedural_blocks.js?v=20261003"></script>
+<script src="identidades.js?v=20261003b"></script>
+<script src="game.js?v=20261004a"></script>
 <script src="touch.js?v=20261008e"></script>
 </body>
 </html>

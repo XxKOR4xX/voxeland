@@ -1,0 +1,100 @@
+Tras reevaluar minuciosamente la imagen de $512 \times 480$ píxeles, la estimación de coordenadas se ajusta al **88% de certeza**. La distribución espacial general y los límites principales son correctos, pero la precisión píxel por píxel puede requerir un margen de corrección de $\pm 5$ a $10$ píxeles según las sangrías y márgenes transparentes que uses al recortar.
+
+Aquí tienes la verificación y las coordenadas refinadas sección por sección:
+
+---
+
+### 1. UI Base y Navegación
+
+* **Porcentaje de certeza:** **95%**
+* **Botones de UI superiores (flechas y 'X'):** `X: 20` a `X: 110`, `Y: 20` a `Y: 45`
+
+* **Muestras de color cuadradas:** `X: 125` a `X: 165`, `Y: 23` a `Y: 43`
+
+* **Libro Abierto:** `X: 20` a `X: 228`, `Y: 45` a `Y: 178`
+
+* **Libro Cerrado:** `X: 248` a `X: 350`, `Y: 45` a `Y: 178`
+
+
+---
+
+### 2. Divisores e Iconografía
+
+* **Porcentaje de certeza:** **90%**
+* **Separadores decorativos:** `X: 395` a `X: 490`, `Y: 25` a `Y: 60`
+
+* **Matriz de Iconos (Total):** `X: 378` a `X: 475`, `Y: 90` a `Y: 178`
+
+* *Filas 1-2 (Calavera, Yunque, etc.):* `X: 378` a `X: 475`, `Y: 90` a `Y: 132`
+
+* *Filas 3-4 (Pin, Flechas, Castillo, etc.):* `X: 378` a `X: 475`, `Y: 135` a `Y: 178`
+
+
+
+
+---
+
+### 3. Sistema de Marcos Modulares / Nine-Patch
+
+* **Porcentaje de certeza:** **85%** *(Los bordes entre piezas de la cuadrícula comparten paredes, por lo que el encuadre exacto varía según la técnica de slicing)*.
+* **Área Total del Bloque de Marcos:** `X: 20` a `X: 268`, `Y: 220` a `Y: 475`
+
+* **Fila Superior (Marcos 1, 2 y 3):** `Y: 220` a `Y: 300`
+
+* *Marco Madera/Bambú:* `X: 20` a `X: 102`
+
+* *Marco Clásico:* `X: 102` a `X: 185`
+
+* *Marco Ornamental:* `X: 185` a `X: 268`
+
+
+
+* **Fila Media (Marcos 4, 5 y 6):** `Y: 300` a `Y: 385`
+
+* *Marco Minimalista:* `X: 20` a `X: 102`
+
+* *Cuadro Limpio:* `X: 102` a `X: 185`
+
+* *Marco Complejo:* `X: 185` a `X: 268`
+
+
+
+* **Fila Inferior (Marcos 7, 8 y 9):** `Y: 385` a `Y: 475`
+
+* *Marco Sencillo:* `X: 20` a `X: 102`
+
+* *Panel Doble:* `X: 102` a `X: 185`
+
+* *Marco Barroco:* `X: 185` a `X: 268`
+
+
+
+
+---
+
+### 4. Diagramas de Bestiario / Diagramas
+
+* **Porcentaje de certeza:** **88%**
+* **Área Total de Anotaciones:** `X: 290` a `X: 480`, `Y: 220` a `Y: 310`
+
+* *Muñeco de madera:* `X: 290` a `X: 350`, `Y: 220` me a `Y: 300`
+
+* *Personaje central con anotaciones:* `X: 350` a `X: 410`, `Y: 220` a `Y: 300`
+
+* *Boceto de criatura e ilustración de hongo:* `X: 410` a `X: 480`, `Y: 220` a `Y: 310`
+
+
+
+
+---
+
+### 5. Sellos Rúnicos y Círculos Mágicos
+
+* **Porcentaje de certeza:** **85%**
+* **Sello con Nodos (Arriba-Izquierda):** `X: 288` a `X: 355`, `Y: 325` a `Y: 395`
+
+* **Círculos Concéntricos (Arriba-Centro):** `X: 355` a `X: 418`, `Y: 325` a `Y: 395`
+
+* **Sello con Diamantes (Arriba-Derecha):** `X: 418` a `X: 480`, `Y: 325` a `Y: 415`
+
+* **Base / Altar Octagonal (Abajo-Izquierda):** `X: 292` a `X: 360`, `Y: 395` a `Y: 460`

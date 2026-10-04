@@ -22,64 +22,183 @@ var MathGlob = Math
 function MineKhan() {
 	let Math = MathGlob
 	let setPixel, getPixels
-	let textures = {
-		grassTop: function(n) {
-			let r = 0, g = 0, b = 0, d = 0
-			for (let x = 0; x < 16; x++) {
-				for (let y = 0; y < 16; y++) {
-					d = Math.random() * 0.25 + 0.65
-					r = 0x54 * d
-					g = 0xa0 * d
-					b = 0x48 * d
-					setPixel(n, x, y, r, g, b)
+	// ------------------------------------------------ procedural_blocks ----
+	// Texturas de bloque generadas en runtime con ProcBlocks
+	// (png/blocks/procedural_blocks.js).  Modo 'tile': UN tile 16x16
+	// tileable por tipo, horneado en el atlas igual que cualquier otra
+	// textura.  `holes` deja huecos (letras translucidas); si el script no
+	// llegara a cargar, el tile sale magenta para que el fallo se vea sin
+	// romper el arranque del juego.
+	function procPixels(type, seed, holes, alpha) {
+		const P = typeof ProcBlocks !== "undefined" ? ProcBlocks : null
+		const pix = new Uint8Array(1024)
+		for (let i = 0; i < 256; i++) {
+			const x = i & 15, y = i >> 4
+			let c
+			if (P) {
+				c = P.pixel(type, x, y, seed | 0, true)
+			} else {
+				if (i === 0) {
+					console.warn("ProcBlocks no cargo: textura '" + type + "' en magenta")
+				}
+				c = [255, 0, 255, 255]
+			}
+			const a = holes && P && P.hash(x, y, (seed | 0) + 7) < holes ? 0 : c[3]
+			pix[i * 4] = c[0]
+			pix[i * 4 + 1] = c[1]
+			pix[i * 4 + 2] = c[2]
+			pix[i * 4 + 3] = alpha === undefined ? a : Math.round(a * alpha / 255)
+		}
+		return pix
+	}
+	function procTile(n, type, seed, holes, alpha) {
+		const pix = procPixels(type, seed, holes, alpha)
+		for (let i = 0; i < pix.length; i += 4) {
+			setPixel(n, i >> 2 & 15, i >> 6, pix[i], pix[i + 1], pix[i + 2], pix[i + 3])
+		}
+	}
+	// ------------------------------------------------ hojas (generador) ----
+	// Port del generador de arbustos (png/leaves/generador_hojas.html):
+	// tono y saturacion dentro de la paleta del bioma, luminosidad con
+	// RUIDO GRUESO (clumps de 4x4 px: manchas de hojas de verdad, no
+	// ruido uniforme) y huecos calados.  El RNG Lehmer es sembrable:
+	// cada variante del tile es una semilla distinta.  La luminosidad se
+	// recalibra a copa ~100: el generador pinta oscuro porque su render
+	// 3D aclara cada cara (x1.55); aqui ese papel lo hace el AO del motor.
+	function rngHoja(seed) {
+		seed = Math.max(1, Math.floor(seed)) % 2147483647
+		return function() {
+			seed = seed * 16807 % 2147483647
+			return (seed - 1) / 2147483646
+		}
+	}
+	// hsl(h en grados, s/l en %) -> [r, g, b]
+	function hsl2rgb(h, s, l) {
+		h = ((h % 360) + 360) % 360
+		s = Math.min(100, Math.max(0, s)) / 100
+		l = Math.min(100, Math.max(0, l)) / 100
+		const c = (1 - Math.abs(2 * l - 1)) * s
+		const x = c * (1 - Math.abs((h / 60) % 2 - 1))
+		const m = l - c / 2
+		let r = 0, g = 0, b = 0
+		if (h < 60) { r = c; g = x }
+		else if (h < 120) { r = x; g = c }
+		else if (h < 180) { g = c; b = x }
+		else if (h < 240) { g = x; b = c }
+		else if (h < 300) { r = x; b = c }
+		else { r = c; b = x }
+		return [Math.round((r + m) * 255), Math.round((g + m) * 255), Math.round((b + m) * 255)]
+	}
+	// Paletas de bioma del generador: h0..h1 tono, s0..s1 saturacion, l
+	// desvio de luminosidad.  forest = roble, birch = abedul; cherry,
+	// autumn, taiga, jungle, savanna y swamp quedan listas para futuras
+	// especies de arbol.
+	const PALETAS_HOJA = {
+		forest:  { h0: 95,  h1: 120, s0: 55, s1: 65, l: 0 },
+		jungle:  { h0: 105, h1: 128, s0: 68, s1: 80, l: 2 },
+		taiga:   { h0: 135, h1: 165, s0: 32, s1: 44, l: -5 },
+		savanna: { h0: 58,  h1: 76,  s0: 38, s1: 50, l: 2 },
+		swamp:   { h0: 78,  h1: 100, s0: 22, s1: 34, l: -7 },
+		birch:   { h0: 72,  h1: 94,  s0: 45, s1: 56, l: 7 },
+		cherry:  { h0: 328, h1: 345, s0: 55, s1: 72, l: 26 },
+		autumn:  { h0: 12,  h1: 42,  s0: 70, s1: 85, l: 4 },
+	}
+	const HUECOS_HOJA = 0.25   // ~25% de la copa calada
+	const FLOR_ROSA = [330, 75, 72]   // FLH.pink del generador (blossom)
+	// El blossom del generador, estampado en 2D sobre el tile: 4 petalos
+	// en cruz (disco oscuro + disco claro, como su fo()) y un centro
+	// dorado (su ce).  pinta pixelos redondos, alpha pleno.
+	function florBlossom(pix, x, y, w, col, dl) {
+		const disco = (cx, cy, r, rgb) => {
+			const rr = Math.round(r)
+			for (let dy = -rr; dy <= rr; dy++) {
+				for (let dx = -rr; dx <= rr; dx++) {
+					if (dx * dx + dy * dy > r * r) continue
+					const px = Math.round(cx) + dx, py = Math.round(cy) + dy
+					if (px < 0 || px > 15 || py < 0 || py > 15) continue
+					const o = (py * 16 + px) * 4
+					pix[o] = rgb[0]; pix[o + 1] = rgb[1]; pix[o + 2] = rgb[2]; pix[o + 3] = 255
 				}
 			}
-		},
-		grassSide: function(n) {
-			let r = 0, g = 0, b = 0, d = 0
-			let pix = getPixels("0g0g70ordrzz0u30g730wa4vzz0xnyl8f11lrk7315qj7jz1fh47pb6553365533033636350335403653650063306333633300635163503655353653535605335031350330553500033033366333433663663535336655335055335553353530355333033503300333336635353663650660554353355635155305303053556333333366353323553060365553063030663533555365534355335530")
-			for (let i = 0; i < pix.length; i += 4) {
-				setPixel(n, i >> 2 & 15, i >> 6, pix[i], pix[i+1], pix[i+2], pix[i+3])
-			}
+		}
+		const ce = [48, 95, 58]
+		for (const par of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+			disco(x + par[0] * w * 0.85, y + par[1] * w * 0.85, w * 0.56, hsl2rgb(col[0], col[1], col[2] - 40))
+			disco(x + par[0] * w * 0.85, y + par[1] * w * 0.85, w * 0.45, hsl2rgb(col[0], col[1], col[2] + dl))
+		}
+		disco(x, y, w * 0.5, hsl2rgb(ce[0], ce[1], ce[2] - 34))
+		disco(x, y, w * 0.34, hsl2rgb(ce[0], ce[1], ce[2]))
+	}
+	// Tile de hojas 16x16 del generador: clumps + huecos + blossom
+	// opcional.  Con `disco` se aplica una MASCARA CIRCULAR (esquinas a
+	// alpha 0): es el tile de los 4 discos verticales + el techo de la
+	// copa, como las celulas dentro del radio R del generador y los
+	// sprites de png/leaves/Discos.
+	function hojaTile(n, semilla, paleta, huecos, flor, disco) {
+		const rnd = rngHoja(semilla)
+		const p = PALETAS_HOJA[paleta]
+		const coarse = []
+		for (let i = 0; i < 16; i++) coarse.push(rnd())
+		const pix = new Uint8Array(1024)
+		for (let y = 0; y < 16; y++) {
 			for (let x = 0; x < 16; x++) {
-				let m = Math.random() * 4 + 1
-				for (let y = 0; y < m; y++) {
-					d = Math.random() * 0.25 + 0.65
-					r = 0x54 * d
-					g = 0xa0 * d
-					b = 0x48 * d
-					setPixel(n, x, y, r, g, b)
-				}
+				const rh = rnd(), r1 = rnd(), r2 = rnd(), r3 = rnd()
+				if (rh < huecos) continue   // hueco calado (queda alpha 0)
+				const h = p.h0 + r1 * (p.h1 - p.h0)
+				const s = p.s0 + r2 * (p.s1 - p.s0)
+				const l = Math.max(8, Math.min(85, 22 + p.l * 0.3 + coarse[(y >> 2) * 4 + (x >> 2)] * 8 + r3 * 14))
+				const rgb = hsl2rgb(h, s, l)
+				const o = (y * 16 + x) * 4
+				pix[o] = rgb[0]; pix[o + 1] = rgb[1]; pix[o + 2] = rgb[2]; pix[o + 3] = 255
 			}
-		},
-		leaves: function(n) {
-			let r = 0, g = 0, b = 0, a = 0
-			for (let x = 0; x < 16; x++) {
-				for (let y = 0; y < 16; y++) {
-					r = 0
-					g = Math.floor(Math.random() * 40 + 140)
-					b = Math.floor(Math.random() * 30 + 25)
-					if (Math.random() < 0.35) {
-						a = 0
-					} else {
-						a = 255
-					}
-					setPixel(n, x, y, r, g, b, a)
-				}
+		}
+		if (flor) {
+			// Densidad de flores al 25% de la original: 0-1 blossom por
+			// tile (antes 2-3; 2.5 * 0.25 = 0.625 de media)
+			const nflores = rnd() < 0.625 ? 1 : 0
+			for (let k = 0; k < nflores; k++) {
+				florBlossom(pix, 3 + rnd() * 10, 3 + rnd() * 10, 0.65 + rnd() * 0.3, flor, (rnd() - 0.5) * 14)
 			}
-		},
-		oakPlanks: function(n) {
-			let r = 0
+		}
+		if (disco) {
 			for (let y = 0; y < 16; y++) {
-				let a = (y & 3) === 3 ? 0.7 : 1
 				for (let x = 0; x < 16; x++) {
-					let mid = x === 8 && (y & 7) > 3 && a === 1 ? 0.85 : 1
-					let rit = x === 15 && (y & 7) < 3 && a === 1 ? 0.85 : 1
-					r = (Math.random() * 0.1 + 0.9) * a * mid * rit
-					setPixel(n, x, y, 190 * r, 154 * r, 96 * r)
+					const dx = x - 7.5, dy = y - 7.5
+					if (dx * dx + dy * dy > 56.25) {   // radio 7.5 px
+						pix[(y * 16 + x) * 4 + 3] = 0
+					}
 				}
 			}
+		}
+		for (let i = 0; i < 1024; i += 4) {
+			setPixel(n, i >> 2 & 15, i >> 6, pix[i], pix[i + 1], pix[i + 2], pix[i + 3])
+		}
+	}
+	let textures = {
+		grassTop: function(n, v) { procTile(n, "grass_top", v) },
+		grassSide: function(n, v) { procTile(n, "grass_side", v) },
+		leaves: function(n, v) {
+			hojaTile(n, 1001 + (v | 0), "forest", HUECOS_HOJA)
 		},
+		birchLeaves: function(n, v) {
+			hojaTile(n, 2001 + (v | 0), "birch", HUECOS_HOJA)
+		},
+		blossomLeaves: function(n, v) {
+			hojaTile(n, 3001 + (v | 0), "forest", HUECOS_HOJA, FLOR_ROSA)
+		},
+		// Discos de la copa: el mismo follaje con mascara circular.  LAS
+		// MISMAS SEMILLAS que su bloque: el disco de un bloque lleva el
+		// mismo patron que sus caras de cubo.
+		leavesDisc: function(n, v) {
+			hojaTile(n, 1001 + (v | 0), "forest", HUECOS_HOJA, null, true)
+		},
+		birchLeavesDisc: function(n, v) {
+			hojaTile(n, 2001 + (v | 0), "birch", HUECOS_HOJA, null, true)
+		},
+		blossomLeavesDisc: function(n, v) {
+			hojaTile(n, 3001 + (v | 0), "forest", HUECOS_HOJA, FLOR_ROSA, true)
+		},
+		oakPlanks: function(n, v) { procTile(n, "planks", v) },
 		hitbox: function(n) {
 			for (let x = 0; x < 16; x++) {
 				for (let y = 0; y < 16; y++) {
@@ -87,22 +206,22 @@ function MineKhan() {
 				}
 			}
 		},
-		dirt: "0g0g70ordrzz0u30g730wa4vzz0xnyl8f11lrk7315qj7jz1fh47pb6553365533033636350335403653650063306333633300635163503655353653535605335031350330553500033033366333433663663535336655335055335553353530355333033503300333336635353663650660554353355635155305303053556333333366353323553060365553063030663533555365534355335530",
-		stone: "0g0gf0v74dmg0v74f7c0xf169k0xf17ug0xfcet40xfcge00xfchyw0xfnoxk0zn97g80zn99140znkfzs0znkhko0znkj5k11vh8mw11vsirc5548515111111551595851111155b55155558535155bb555555556556b55bb55b5b85bbb56535bbbbbbbbbcb5b5bbbb6bebbeebebbbbbbbbbeebbebbbbeebb5b1beeeeb555bb555b5a5deebbbbbbb55bbbbeeebb558b555bbabdeebbb51b5551babeebbbb559555555beeb115b15555515552555bb5a5b751051241bb1555551",
-		logSide: "0g0gx06ocs1k06octmg08w9j3s08wkt880b4hkag0b4ssu00b4suew0dcpjw80dcplh40dd0u0o0dd0vlk0fkxl2w0fkxmns0fl8v7c0ht5koo0ht5m9k0ht5nug0htgwe00k1dng80k1dp140k1oxko0m9aeig0m9ag3c0m9ln200m9lomw0ohifp40ohto8o0ohtptk0qpqfaw0qpqgvs0qq1pfc0sxyghk0sxyi2g89ocopmioi3difc581i9sgldof3d5d3633igqctbof3c8q3546ggqcvfi3ogct8546iciutflfrifo85b8rckpq6oftodd63e91dgct8rduhcdc6bdbflqoitafaihc80gbnloiqrgciiic97gbnfqrik9fgiof8569icorir6ogar642dfriourodji8qc008i8powirgoicod30co9ikuqhiqdck333do8foitcgocfgd69dociq9riofchfd3",
-		logTop: "0g0g90l5j1fj0qftm2n0wa7mdb0z2esxr15quebj189da7z1cpma671f7ppfj1hzyayn1012101120110111077776768667777017334454555544811738877776777471164766666666756107576445544674601646636666466471165764655656756116576465464674610657646666566460164764434556756116576666666674610757767777787460175454444444447117776676686677711011101120110211",
-		bedrock: "0g0g509gy58f0e7f7r30o8fd330rkrev31627mkf3111124324211212133434341443012110110111412224232433202422111112014111121134433112221221102211014432344323443410222122211011213234421122344344442110121213211143334134410144431102221123442334402111321134111112343420211101234433211211234421121011044312301123",
-		glass: "0g0g2000000008ww4xk1111111111111111100000000000000110000000000000011000000000000001100000000000000110000000000000011000000000000001100000000000000110000000000000011000000000000001100000000000000110000000000000011000000000000001100000000000000110000000000000011111111111111111",
-		cobblestone: "0g0go08ww4xk0flk8hk0hts9o80k209a00ma8ago0ma8c1k0majkl40oi533s0oigbnc0oigd880qqd4ag0qqocu00qqoeew0syl5h40sywe0o0sywflk0sz7o540v6t52w0v6t6ns0v74f7c0xf169k0xf17ug0xfcge00znkhko0deje0h808bbbe000ekme000079ab90f000000ie0400000j0mlmj0e00j03210b000000000800000b0jcc0jm0040e9809000b0jm000000000mm000mm0jg0nmnejem0n09b08800000ejm0m00005ejjjf0jmj0n0m00ejmjeb0emj0m0fn00000000b000b0bj0el0mlj04450b0b608j0jmj08000000000000000008b8802054048088",
+		dirt: function(n, v) { procTile(n, "dirt", v) },
+		stone: function(n, v) { procTile(n, "stone", v) },
+		logSide: function(n, v) { procTile(n, "log_side", v) },
+		logTop: function(n, v) { procTile(n, "log_top", v) },
+		bedrock: function(n, v) { procTile(n, "bedrock", v) },
+		glass: function(n, v) { procTile(n, "glass", v) },
+		cobblestone: function(n, v) { procTile(n, "cobblestone", v) },
 		mossyCobble: "0g0gb0muaccf0mupnnj0p38xdr0r0pekf0rbmj9b0un11q70w1wkxr0y07svz11vr5rz1a8mosf1ef1r0f4199211276438a9619a8812764813858398951644251118533852182851464110531183233866642a176895308948428981498852118851988111851664158385117641484642305126244558824124185442111155214698112124761318998127651764653885847488164588511858685851588531841183352111338a984",
 		stoneBricks: "0g0gv0hu3i7s0k20auw0ma8ago0ma8c1k0oigbnc0oigd880oirlrs0qqocu00sywe0o0v74f7c0v74gs80xf17ug0xfcge00xfchyw0xfnoxk0xfnqig0zn97g80zn99140znkfzs0znkhko0znkj5k0znvq4811vh8mw11vsh6g11vsirc143p9tk143pbeg1440jy0144bu2g16bxb0816bxcl4krrtrqrooqqooorj9jgjg9b999ccjjf9accchcccaccjjcc9acgchhdjjjjgjjcacgjjcjjjcjgccjjccjjjjjojcjgmjjjccojjoojojjjjjjjc3775587777765542jrssurro7rrrrorrjojoprlc7nooojjojjmooojc7cjjjccjjjjooomc7ccjccccjjjoonjc7cgjcccccijoolc97jcchccc9ccjcccc7gcjfjec1121111221111210",
 		mossyStoneBricks: "0g0gw0hts9o80hu3i7s0k209a00k20auw0k2bhtk0k2bjeg0ma8ago0majj080majkl40oiga2g0oigbnc0oirim00oirk6w0qqob940qqocu00qqzjso0qqzldk0sywcfs0sywe0o0sz7kzc0sz7mk80v74dmg0v74f7c0v7fnqw0v7fpbs0xfcet40xfcge00xfnnco0xfnoxk0znkeew0znkfzs0znkhkoipprtsruuvuprnui7ccffcbhigigkkk879cbfgciiikklkiaaddcdhgmoplllmkcadhfgkhnmppklnmcahhffkknmqmppnkcchfdjlhnqplnnlie1521264666666521pvuqssuq6qvssqvvqpllprli6mqnsmqvqmpppunk6knppmnsqppppvpm6kknmmmmqqquuqpm6mmmmlmnpqpuuqki6nklnmnnlmklklkm6mmmnnnq3221222362223330",
-		bricks: "0g0g811twquw1aq69rs1cyeayg1cyecjc1f6b3lk1f6mc541f6mdq01hej4s80000000000000000052552220525522006775542067755400566455105664550000000000000000032203525422205255530377655420777352025563531055600000000000000000525522205255220077755420777554005664551056645500000000000000000322035254222052555303777554207773520255635310556",
-		coalOre: "0g0gn06oo3qw06oo5bs06ozdvc08ww4xk08x7f200b546480qqoeew0sywe0o0sywflk0v74f7c0v74gs80v7fpbs0xf169k0xf17ug0xfcet40xfcge00xfchyw0xfnoxk0zn97g80zn99140znkfzs0znkhko11vsircfffif9f999999ffffjfif99999afiffbffff199999df30ffiffdff930ffffffflflf999a9a99aflllllf95599955flllllg53002aa00fllllmlfffb999flllll933lllf855ffffflffflllf31009fffllkll3lff97999ffllklllllf9765599flllllllf5430009fffl33l99900799ffefffcffflffffffh99fccfelm9fffffb",
-		ironOre: "0g0g80sywflr0wb8hdr0zdjj0f13tzldr1cpl2bj1gbvabj1o4exa71qwyvb33223211210112333221203333220002121005120011265223332322642322311122110013212312223220762217510131227655432542222100223330001133336523210762122312232021644423332021251001330021122222333301643322110033167666421332542223442122221123332233211122222221322222233",
-		goldOre: "0g0g80sywflr0wb8hdr0zdjj0f13tzldr1x01czj1y6gem71z13ncv1z141z33223211210112333221203333220002121005120011265223332322642322311122110013212312223220762217610131227655432542222100223330001133336523210762122312232021644423332021251001330021122222333301643322110033167655421332642223442122221123332233211122222221322222233",
-		diamondOre: "0g0g80h634zj0sagdtr0sywflr0wb8hdr0zdjj0f13tzldr1845xbz1ndl24f5445433432334555443425555442224343221342233461445554544604544533344332235434534445442764437632353447611054104444322445552223355556145432764344534454243600045554243413223552243344444555523605544332255367611043554604445004344443345554455433344444443544444455",
-		redstoneOre: "0g0g90sywflr0wb8hdr0zdjj0f13oi67z13tzldr15wexa71b68mbj1f24cfz1yr4gsf4224211210112444221204444220002121005120011285224442422832422411122110014212412224220862218610141227655342532222100224440001144448524210862122412242021633324442021251001440021122222444401834422110044168655321442832224332122221124442244211122222221422222244",
+		bricks: function(n, v) { procTile(n, "bricks", v) },
+		coalOre: function(n, v) { procTile(n, "coal_ore", v) },
+		ironOre: function(n, v) { procTile(n, "iron_ore", v) },
+		goldOre: function(n, v) { procTile(n, "gold_ore", v) },
+		diamondOre: function(n, v) { procTile(n, "diamond_ore", v) },
+		redstoneOre: function(n, v) { procTile(n, "redstone_ore", v) },
 		lapisOre: "0g0ga04hvenz04hvl6n04ihywv066fd3306r2ozj08z4sfz0sywflr0wb8hdr0zdjj0f13tzldr9889877876778999886669999886668787454386777813889889926329989977788776679867978889866428862576797861242398238888723679978767799993189872643386678998687222236258686627661237725788300799668893588779906612366339998700381039799887783339899877788888899888888899",
 		emeraldOre: "0g0g7004swsf06mdmv30sywflr0wb8hdr0zdjj0f13tzldr1ohjdhb5445432232334555443445615442334343223310333422445555225555546133344361324555104445441061243255353445551054434444332232552323355555545461442244534444441053615224243433223310361344444556155551044223455103322553261334455444344441045554455433344554443544444455",
 		coalBlock: "0g0g501e50xr03md24f05ul3b308mtq0v0bf3ri73322122002210012222121000210123321000122000022221001243222202210001233222100210020222221000001220132211001122222022210122343221002110123322210000012123221103200212122210002211232102112210012230002113432123322000123420023221000123210012221001222212212221000",
@@ -130,8 +249,8 @@ function MineKhan() {
 		spruceLogSide: "0g0g60csc9vj0cskpof0dmmb5r0geuxof0lf4i670nnb4sf3243304330342431325130513034233130113051323223314031323131302341423130315131324343234232514232431323411343433243130343143341314332053314314141433325331331424303333431303132430332343130533053235233414051303313532343324132333343243340323224334324234232332431",
 		spruceLogTop: "0g0g80ix87pb0nnb4sf0p1n6db0qzu7zz0v5xypr0xy569r106bshr11ueyv31012101120110111066665657556666016223343444433711627766665666361153655555555645106465334433563501535525555355361154653533545645115465353353563510546535555455350153653323445645115465555555563510646656666676350164343333333336116665565575566611011101120110211",
 		sprucePlanks: "0g0gc0k1dng80m9aeig0m9ag3c0m9lomw0ohifp40ohto8o0qpqfaw0qpqgvs0sxn7y00sxyghk0v5v7js0v5v94o9797977999aabaaababab99aabbbbbbabbbaba9abbbbbbbb3332112344444444b7998999aa789aaaa9999999aa9abbba9777999ba999abaa31223344330000227776778999887777544434455774544476744454577535773330022233313333ba9abbbab99abbbbbaaabbbba99ab9ab9abaabaa8479989a3333433333443332",
-		sand: "0g0g61hh1fco1joy6ew1joy7zs1jp9eyg1jp9gjc1lx67lk5554110111455555554433343145545544444435555554455554311554555344455551113555554313555111335455434113351111111111555445513111111145555453344433343355555555543345545555555455443554355335555441143445453455555113334445543453433331124111311545333341110111335553",
-		gravel: "0g0go0qqd2pk0syl2bc0syl3w80sywcfs0v6huyg0v6t3i00v6t52w0v74dmg0v74f7c0xepw540xf14oo0xf169k0xfcet40zmxvqw0zmxxbs0zn95vc0zn97g80znkfzs11v5wxk11v5yig11vh72011vh8mw143dzp4143p88oaaeg96gnjfbkgbc7cfmg40afgcn6alg6fff2aa6af7760ck655akk5f6g8bf626bk57gkfbfab54b6bg7efh5fcbflhla67bbgfgfecabjgggflcegflbak7ffgbjggfkgbklabfkffgbegg5afafakkfkj6gkgffe635ffa6bkbbfgefaajfaa229kgekkhjf5kfaag62ekkj4kae422ga6gaaa4jf6a5fbiafbgfe2djg5e7abffekgfkb5bb1",
+		sand: function(n, v) { procTile(n, "sand", v) },
+		gravel: function(n, v) { procTile(n, "gravel", v) },
 		blackConcrete: "0g0g40149on3028826702882yn028dp8f1330112022012232303130022112212111032203010022012122012222321221011223213030101033110011212233120230013131003200032022012002002112233122202312230200102211312102222122132011021201223320211021220121122122321331201102120210001220112022023302312210123220102110",
 		blackWool: "0g0gf0149on3028826702882yn028dp8f03cc2rj03cc3jz03chptr04gg3cv04glqf305kk3y705kpr0f06oo4jj07ss54v08ww5q70a106bj46348b45ab13993299eebb7742570367bc77dc97bcbbdeb996bc768c47cc96ec9749bb115953bb31314c414641672547eebb8879bea7eeb966eebacc45bca9ccbb35ca4657528733577b117949ee7beeccbbecbacb799839349966bb445911796611cd318b9bee92badecb9717bc77cedc97c99beb559b6424c946cd76ac44bc",
 		blueConcrete: "0g0g30hy6dq00k634s80k6eewo1110111111111111011101111111111010121111111112211111111111111111111111111111111110111011011011111111111111111111111111111101111111111111111011111111111001110111111111111001111111111111111111111111111111111111011011111111101111111111111211111111111111111111",
@@ -195,7 +314,7 @@ function MineKhan() {
     chiseledSandStoneTop: "0g0gk1d0a1a01f86sc81f8i0vs1f8i2go1hgetiw1hgq22g1hgq3nc1hgq5881jomt4o1jomupk1jomwag1joy3941joy4u01joy6ew1jp9eyg1lwuvw81lwuxh41lx64fs1lx660o1lx67lkccddiccc59cfcccciciceijic6bffijjicciiijjiccicccgiidi936fijcgccccdicdgdgigdcdgggcdiiigccdccciiiidiiggcig9acccc3cgcicciig9cc9c9136c7cddcccdc6336ccccccc42cc66949cac9cc9495c6693056ccccb969b9fgcf9c6bcb596cc9fiifh649ccccb466ifffi9bbcfb84346c65965cfigi3366699fccb",
     ironBarsSide: "0g0g200000000sywflk0010000010000100001000001000010000100000100001000010000010000100001000001000010000100000100001000010000010000100001000001000010011111111111111110010000010000100001000001000010000100000100001000010000010000100001000001000010000100000100001000010000010000100",
     ironBarsTop: "0g0g100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
-    waterBlock: "0g0g70b5rqnk0b62z740ddzq9c0deaysw0dem7cg0fmiyeo0fmu6y83100001333211366000133100000000033310100013352133000000000000101000000000000013100000131000000001001000012113452100012310000013321112111111343331100000000011323000000000000011000000000000000001200001100000000110000001111110100000000121362000000121346633311",
+    waterBlock: function(n, v) { procTile(n, "water", v, 0, 176) }, // alpha 176: el agua sigue dejando ver el fondo
     altLeavesSide: "0g0gr029gzjs04hdqm006qjhfc08yg8hk08yrh1408yrim008z2pko08z2r5k0b6zi7s0b7aqrc0dg59140dgghko0fod8mw0fooh6g0fooirc0fozpq00fozraw0hwwid40hx7pbs0hx7qwo0hxizg80hxu7zs0k20auw0k5fqig0k5qz200k6296g11vskc8j9dck8cpj31111ch1111112doeoj1111114on11111bi0dpl14dfo15gj30111fj060111ceo4311314mmmmmmmmmmmmmmmmmqqqqqqqqqqqqqqmmqqqqqqqqqqqqqqmmqqqqqqqqqqqqqqmmqqqqqqqqqqqqqqmmqqqqqqqqqqqqqqmmmmmmmmmmmmmmmmm113dc441111cceo0dol10fnp336111344dk231dh151dno11o41jk11476achk3k",
     altLeavesTop: "0g0gp029gzjs04hdqm006qjhfc08yg8hk08yrh1408yrim008z2pko08z2r5k0b6zi7s0b7aqrc0dg59140dgghko0fod8mw0fooh6g0fooirc0fozpq00fozraw0hwwid40hx7pbs0hx7qwo0hxizg80hxu7zs0k5fqig0k5qz200k6296gj9dck8coj31111ch1111112dnenj1111114nm11111bi0dol14dfn15gj30111fj060111cen4311314hbjm121341cjmn3111cn14hfmj63bj113111111ddk111011k101kk41113fkh4an83cfk1ek1hchk21331111ddo91137111deek1113141nnn1113dc441111ccen0dnl10fmo336111344dk231dh151dmn11n41jk11476achk3k",
     oakDoorTip: "0g0ga04gg0zc06ocs1k06octmg08w9koo08wkt880b4hkag0b4hlvc0b4suew0dcplh40xfchyo8887775544442110874444432221101184444444444221418547559999444242844755999944224284469999999922428447999999992242844799999999224284479999999922428447999999992242844599999999224284459999999922428445999999992242844599999999224274449999999922427444999999992242",
@@ -225,6 +344,9 @@ function MineKhan() {
     tallGrassTop4: "0g0gx000000013tjt331gcooan18u0fzz18jzgn313jk8ov1fiojy7189zw1r1800bgf17q0qv31eypekf17fzshr1eopu670xp94ov1e4pa0v1duppmn0u2xipr1dkq58f1dkq5fj16lzny716c03cv1dap69r0wvaein0wl9fcv1cqq0hr1620irj11bkv0f1cgqg3j15s0y670wb9v5r1c6pgqn10rkb9b1c6phbz01000000000000000010100000200000001030000020010000405400004050000006070007507000000608000800800000090a000a00a000000b0c0d0c00c000000e0e0d0e0be0d0000f0f00df0fgg00000h0ij0ji0ij0000k0lklk0lk0lm00000nopqo0op0on000000rs0r0rs0s0000000tu0u0s0ts00v00v00w0w0s0tw0v00",
     
     
+    snow: function(n, v) { procTile(n, "snow", v) },
+    obsidian: function(n, v) { procTile(n, "obsidian", v) },
+    lava: function(n, v) { procTile(n, "lava", v) },
 	}
 
 	let blockData = [
@@ -247,6 +369,17 @@ function MineKhan() {
 		{
 			name: "leaves",
 			transparent: true,
+			bush: true,
+		},
+		{
+			name: "birchLeaves",
+			transparent: true,
+			bush: true,
+		},
+		{
+			name: "blossomLeaves",
+			transparent: true,
+			bush: true,
 		},
 		{
 			name: "glass",
@@ -436,6 +569,13 @@ function MineKhan() {
 	  hidden: true,
 	  noDrop: true,
 	  variants: [ "tallGrassTop", "tallGrassTop2", "tallGrassTop3", "tallGrassTop4" ],
+	},
+	{ name: "snow" },
+	{ name: "obsidian" },
+	{ name: "lava",
+	  transparent: true,
+	  shadow: false,
+	  passable: true,
 	},
 		// { // I swear, if y'all don't stop asking about TNT every 5 minutes!
 		// 	 name: "tnt",
@@ -983,7 +1123,7 @@ function MineKhan() {
 
 	//globals
 	//{
-	let version = "Alpha"
+	let version = "0.1 Alpha"
 	let reach = 100 // Max distance player can place or break blocks
 	// Alcance del rayo contra ENTIDADES (las vacas): mas corto a proposito,
 	// el marco amarillo + panel solo tienen sentido mirando al animal de cerca.
@@ -1811,6 +1951,7 @@ function MineKhan() {
 	let blockMode  = CUBE
 	let tex
 	let textureMap
+	let variantTiles
 	let dirtBuffer
 	let dirtTexture
 	let textureCoords
@@ -1818,8 +1959,10 @@ function MineKhan() {
 	let mainbg, dirtbg // Background images
 	// Scratch buffer for one chunk's mesh. Out-of-range writes are dropped
 	// silently, so it has to hold the worst chunk: crossed plants add up to
-	// ~16 quads per surface column on top of the terrain itself.
-	let bigArray = win.bigArray || new Float32Array(900000)
+	// ~16 quads per surface column, and the leaf bush adds up to 10 fringe
+	// quads per fully visible leaf block (6 cube faces + 4 radial planes
+	// + techo, todos x2 windings) on top of the terrain itself.
+	let bigArray = win.bigArray && win.bigArray.length >= 1200000 ? win.bigArray : new Float32Array(1200000)
 	win.bigArray = bigArray
 
 	// Callback functions for all the screens; will define them further down the page
@@ -1830,14 +1973,54 @@ function MineKhan() {
 		"pause": () => {},
 		"creation menu": () => {},
 		"inventory": () => {},
+		"book": () => {},
 		"multiplayer menu": () => {},
 		"comingsoon menu": () => {},
 		"loadsave menu": () => {},
 	}
+	// Escena del libro (escribir/firmar): las zonas de escritura son HTML
+	// sobre el canvas (mismo patron que chatbox).
+	// Zonas de escritura del libro (kit assets_books): portada
+	// (titulo sobre la etiqueta de la tapa) y las dos hojas.  Los ids van
+	// sin guiones porque los leemos con getElementById.
+	const bookcover = document.getElementById("bookcover")
+	const bookpageL = document.getElementById("bookpageL")
+	const bookpageR = document.getElementById("bookpageR")
+	const bookchapter = document.getElementById("bookchapter")
+	const bookInputs = [bookcover, bookpageL, bookpageR]
 	let html = {
 		pause: {
 			enter: [window.message],
 			exit: [window.savebox, window.saveDirections, window.message]
+		},
+		book: {
+			// Solo callbacks: onenter abre en la portada y sincroniza los
+			// inputs con el slot; onexit hace flush del texto y esconde
+			// todo (incluido el mini-input de nombre de capitulo).
+			// onexit de la escena vieja corre ANTES de que screen cambie
+			// (changeScene), y el value de los inputs se lee oculto.
+			onenter: () => {
+				bookView = "cover"
+				bookSpread = 0
+				syncBookInputs()
+				for (const el of bookInputs) {
+					el.classList.remove("hidden")
+				}
+				bookcover.focus()
+			},
+			onexit: () => {
+				flushBookAll()
+				bookChapterEdit = -1
+				if (bookchapter) {
+					bookchapter.classList.add("hidden")
+					bookchapter.blur()
+				}
+				for (const el of bookInputs) {
+					el.classList.add("hidden")
+					el.blur()
+				}
+				bookSlot = null
+			}
 		},
 		"loadsave menu": {
 			enter: [window.worlds, window.boxCenterTop, window.quota],
@@ -1983,12 +2166,22 @@ function MineKhan() {
 	let gl
 	function getPointer() {
 		if (canvas.requestPointerLock) {
-			canvas.requestPointerLock()
+			// requestPointerLock devuelve promesa en Chrome moderno y
+			// rechaza (NotAllowedError/WrongDocumentError) si aun no hay
+			// activacion del usuario o tras salir con Esc (<1,25s): sin
+			// capturar quedaria un unhandledrejection en la consola.
+			const req = canvas.requestPointerLock()
+			if (req && typeof req.catch === "function") {
+				req.catch(() => {})
+			}
 		}
 	}
 	function releasePointer() {
 		if (doc.exitPointerLock) {
-			doc.exitPointerLock()
+			const rel = doc.exitPointerLock()
+			if (rel && typeof rel.catch === "function") {
+				rel.catch(() => {})
+			}
 		}
 	}
 
@@ -2054,8 +2247,8 @@ function MineKhan() {
 			ty: textureY
 		}
 	}
-	function plantQuad(corners, uv) {
-		return { corners: corners, uv: uv }
+	function plantQuad(corners, uv, tex) {
+		return { corners: corners, uv: uv, tex: tex }
 	}
 	// Two planes crossed in an X, from (0, 0.5) up to the top of the block.
 	// The base sits half a pixel above the block floor so it never lands
@@ -2071,6 +2264,53 @@ function MineKhan() {
 	// visible from both sides.
 	const crossVerts = crossQuads.concat(crossQuads.map(q =>
 		plantQuad(q.corners.slice().reverse(), q.uv.slice().reverse())))
+	// Copa del generador: 4 DISCOS verticales en ASTERISCO (0/45/90/135
+	// grados, radio 1.0 bloque) + un DISCO horizontal por la mitad del
+	// bloque (y=8), como el plano hz del generador.  La forma de disco
+	// la pone el TILE ENMASCARADO (tex "DISC": el mesher lo resuelve al
+	// tile <bloque>Disc); el quad es cuadrado pero sus esquinas salen
+	// transparentes.
+	//
+	// ANTI-PARPADEO: con el asterisco, los discos coplanares de dos
+	// bloques vecinos SI se solapan (apilados, misma capa, diagonal o
+	// antidiagonal).  El mesher separa cada disco a lo largo de su
+	// normal: el bloque los desplaza ((x+2y+4z) mod 8) * 0.04, y para
+	// las 26 direcciones vecinas esa diferencia NUNCA es 0 mod 8:
+	// sus discos coplanares no coinciden, no hay z-fighting.
+	const bushPlanes = (() => {
+		const planos = { bottom: [], top: [], north: [], south: [], east: [], west: [] }
+		const slots = ["north", "east", "west", "south"]
+		const MITAD = 16   // radio 1.0 bloque
+		for (let k = 0; k < 4; k++) {
+			const a = Math.PI * k / 4
+			const ux = Math.cos(a), uz = Math.sin(a)
+			const c = (du, dv) => [8 + ux * MITAD * du, 8 + MITAD * dv, 8 + uz * MITAD * du]
+			planos[slots[k]].push(plantQuad(
+				[...c(-1, 1), ...c(1, 1), ...c(1, -1), ...c(-1, -1)],
+				[0, 0, 16, 0, 16, 16, 0, 16], "DISC"))
+		}
+		// El disco horizontal: a media altura (y=8) y con el MISMO
+		// radio que los verticales: asoma 0.5 bloques por lado y SE VE
+		// en los bordes de la copa (con radio 8 quedaba escondido
+		// dentro del bloque, tras los huecos de las caras).  Vuelve a
+		// solapar area con los discos de su capa: los separa el
+		// desplazamiento del mesher (ver genMesh), con pasos de 0.04
+		// que la resolucion del depth buffer aguanta hasta ~50 bloques.
+		planos.top.push(plantQuad(
+			[8 - MITAD, 8, 8 - MITAD, 8 + MITAD, 8, 8 - MITAD, 8 + MITAD, 8, 8 + MITAD, 8 - MITAD, 8, 8 + MITAD],
+			[0, 0, 16, 0, 16, 16, 0, 16], "DISC"))
+		return planos
+	})()
+	// Doble winding: cada disco visible desde ambos lados.  OJO: se
+	// invierte el ORDEN de los vertices, NO la tabla plan (el reverse()
+	// plano intercambia x por z; en las plantas no se nota porque sus
+	// quads son diagonales simetricos, pero aqui dejaria los planos
+	// axis-aligned cruzados y el diagonal/horizontal con el MISMO
+	// winding: solo se veria por una cara).
+	const bushFlecos = (arr) => arr.concat(arr.map(q => plantQuad(
+		q.corners.slice(9, 12).concat(q.corners.slice(6, 9), q.corners.slice(3, 6), q.corners.slice(0, 3)),
+		q.uv.slice(6, 8).concat(q.uv.slice(4, 6), q.uv.slice(2, 4), q.uv.slice(0, 2)),
+		q.tex)))
 	let shapes = {
 		/*
 			[
@@ -2180,6 +2420,34 @@ function MineKhan() {
 			size: 6,
 			varients: []
 		},
+		// Copa del generador: cubo NUCLEO reducido (0.75, como el s=0.75
+		// del generador) + los 5 discos colgados del slot de su direccion
+		// exterior.  El cubo muestrea el CENTRO 12x12 del tile (tx/ty=2).
+		// cull = el del cubo (el culling de caras queda identico al de
+		// siempre); el outline y el rayo de apuntado usan el cubo COMPLETO,
+		// ver los overrides tras el bucle, igual que las plantas.
+		bush: {
+			verts: [
+				[objectify( 2,  2,  2, 12, 12, 2, 2)], //bottom
+				[objectify( 2, 14, 14, 12, 12, 2, 2)].concat(bushFlecos(bushPlanes.top)), //top
+				[objectify(14, 14, 14, 12, 12, 2, 2)].concat(bushFlecos(bushPlanes.north)), //north
+				[objectify( 2, 14,  2, 12, 12, 2, 2)].concat(bushFlecos(bushPlanes.south)), //south
+				[objectify(14, 14,  2, 12, 12, 2, 2)].concat(bushFlecos(bushPlanes.east)), //east
+				[objectify( 2, 14, 14, 12, 12, 2, 2)].concat(bushFlecos(bushPlanes.west)), //west
+			],
+			cull: {
+				top: 3,
+				bottom: 3,
+				north: 3,
+				south: 3,
+				east: 3,
+				west: 3
+			},
+			texVerts: [],
+			buffer: null,
+			size: 6,
+			varients: []
+		},
 	}
 	win.shapes = shapes
 
@@ -2212,6 +2480,13 @@ function MineKhan() {
 		out[5] = maxZ
 		return out
 	}
+
+	// Lado en pixeles del atlas de texturas (32x32 tiles de 16 px = 1024
+	// huecos, ver initTextures / PROC_VARIANTS).  Los UVs de cada cara se
+	// escalan con esto: si el atlas cambia de tamano y esto se queda
+	// corto, cada cara muestrea mas de un tile y se ven texturas de
+	// otros materiales mezcladas.
+	const TEXTURE_SIZE = 512
 
 	function initShapes() {
 		function mapCoords(rect, face) {
@@ -2248,7 +2523,7 @@ function MineKhan() {
 			let minmax = compareArr(pos, [])
 			pos.max = minmax.splice(3, 3)
 			pos.min = minmax
-			tex = tex.map(c => c / 16 / 16)
+			tex = tex.map(c => c / 16 / (TEXTURE_SIZE / 16))
 			
 			return {
 				pos: pos,
@@ -2262,9 +2537,14 @@ function MineKhan() {
 			let minmax = compareArr(pos, [])
 			pos.max = minmax.splice(3, 3)
 			pos.min = minmax
+			// Hint de textura por cara: los discos de la copa piden el
+			// tile enmascarado del bloque (el mesher resuelve "DISC").
+			if (rect.tex) {
+				pos.tex = rect.tex
+			}
 			return {
 				pos: pos,
-				tex: rect.uv.map(c => c / 256)
+				tex: rect.uv.map(c => c / TEXTURE_SIZE)
 			}
 		}
 		
@@ -2414,7 +2694,7 @@ function MineKhan() {
 				obj.texVerts.push(texArr)
 				for (let j = 0; j < side.length; j++) {
 					let face = side[j]
-					let mapped = obj.cross ? mapQuad(face) : mapCoords(face, i)
+					let mapped = obj.cross || face.corners ? mapQuad(face) : mapCoords(face, i)
 					side[j] = mapped.pos
 					texArr.push(mapped.tex)
 				}
@@ -2450,6 +2730,11 @@ function MineKhan() {
 		shapes.cross.buffer = shapes.cube.buffer
 		shapes.cross.size = shapes.cube.size
 		shapes.cross.hitVerts = shapes.cube.verts
+		// The leaf bush is the same: the fringes are visual, the block
+		// is still aimed, broken and outlined as the full cube.
+		shapes.bush.buffer = shapes.cube.buffer
+		shapes.bush.size = shapes.cube.size
+		shapes.bush.hitVerts = shapes.cube.verts
 
 		for (let i = 0; i < BLOCK_COUNT; i++) {
 			let baseBlock = blockData[i]
@@ -2462,7 +2747,7 @@ function MineKhan() {
 				stairBlock = baseBlock
 			} else {
 				slabBlock.shape = shapes.slab
-				baseBlock.shape = shapes.cube
+				baseBlock.shape = baseBlock.bush ? shapes.bush : shapes.cube
 				stairBlock.shape = shapes.stair
 			}
 			blockData[i | SLAB] = slabBlock
@@ -3268,7 +3553,11 @@ function MineKhan() {
 		if (!data || !data.shape) {
 			return false
 		}
-		let verts = data.shape.verts
+		// Los discos/velas de la copa NO collisionan: la colision es la
+		// del cubo (hitVerts, lo mismo que apunta/rompe el rayTrace).
+		// hitVerts solo lo llevan la copa y las plantas (pasables), asi
+		// que el resto de bloques ni se entera.
+		let verts = data.shape.hitVerts || data.shape.verts
 		let px = roundBits(e.x - e.w - x)
 		let py = roundBits(e.y - e.bottomH - y)
 		let pz = roundBits(e.z - e.w - z)
@@ -3531,7 +3820,8 @@ function MineKhan() {
 		} else {
 			// Basic swimming: reduced gravity, slow sink, Space swims up.
 			// Entering water cancels fall damage.
-			let inWater = (world.getBlock(Math.floor(p.x), Math.floor(p.y - p.bottomH + 0.2), Math.floor(p.z)) & 0xff) === blockIds.waterBlock
+			let feetBlock = world.getBlock(Math.floor(p.x), Math.floor(p.y - p.bottomH + 0.2), Math.floor(p.z)) & 0xff
+			let inWater = feetBlock === blockIds.waterBlock || feetBlock === blockIds.lava
 			if (inWater) {
 				fallDist = 0
 				p.velocity.y += p.gravityStength * dt * 0.4
@@ -3729,16 +4019,21 @@ function MineKhan() {
 
 	function addItemOne(state) {
 		let i
-		for (i = 0; i < inventory.hotbar.length; i++) {
-			if (inventory.hotbar[i] && inventory.hotbar[i].state === state) {
-				inventory.hotbar[i].count++
-				return true
+		// Libros y notas nunca se fusionan en un stack: cada uno guarda su
+		// propio texto/firma, asi que sumar counts mezclaria paginas.
+		const stackable = !(ITEMS[state] && ITEMS[state].book)
+		if (stackable) {
+			for (i = 0; i < inventory.hotbar.length; i++) {
+				if (inventory.hotbar[i] && inventory.hotbar[i].state === state) {
+					inventory.hotbar[i].count++
+					return true
+				}
 			}
-		}
-		for (i = 0; i < inventory.main.length; i++) {
-			if (inventory.main[i] && inventory.main[i].state === state) {
-				inventory.main[i].count++
-				return true
+			for (i = 0; i < inventory.main.length; i++) {
+				if (inventory.main[i] && inventory.main[i].state === state) {
+					inventory.main[i].count++
+					return true
+				}
 			}
 		}
 		for (i = 0; i < inventory.hotbar.length; i++) {
@@ -3795,10 +4090,14 @@ function MineKhan() {
 
 	// Full-stack slot interaction: pick up / place / swap / merge.
 	// Moving between slots moves the stack: never duplicated.
+	// Libros/Notas: si ambos lados son del mismo libro-item, SWAP en vez
+	// de fusionar (el texto vive en el slot, no en el estado).
 	function slotInteract(arr, i) {
 		let slot = arr[i]
 		if (inventory.holding) {
-			if (slot && slot.state === inventory.holding.state) {
+			const mergeable = slot && slot.state === inventory.holding.state
+				&& !(ITEMS[slot.state] && ITEMS[slot.state].book)
+			if (mergeable) {
 				slot.count += inventory.holding.count
 				inventory.holding = 0
 			} else {
@@ -4015,8 +4314,11 @@ function MineKhan() {
 	let breakTimes = {
 		bedrock: Infinity,
 		waterBlock: Infinity,
+		lava: Infinity,
+		snow: 0.4,
+		obsidian: 10,
 		dirt: 0.5, grass: 0.6, sand: 0.5, gravel: 0.6, soulSand: 0.5, netherrack: 0.6,
-		leaves: 0.3, justLeaves: 0.3, altLeaves: 0.3, grassLeaves: 0.3,
+		leaves: 0.3, birchLeaves: 0.3, blossomLeaves: 0.3, justLeaves: 0.3, altLeaves: 0.3, grassLeaves: 0.3,
 		glass: 0.4, iceBlick: 0.4, cobwebBlick: 0.4,
 		oakLog: 1.2, oakPlanks: 1.0, bookshelf: 1.0,
 		stone: 1.5, cobblestone: 1.6, mossyCobble: 1.6, smoothStone: 1.5,
@@ -4111,10 +4413,34 @@ function MineKhan() {
 	// dibuja cae al estilo actual (rects / lineas).
 	// ------------------------------------------------------------------
 	const uiImgs = {}
-	function loadUiImg(name, path) {
+	function loadUiImg(name, path, clean) {
 		const img = new Image()
 		img.src = encodeURI(path)
 		img.onload = function() {
+			if (clean) {
+				// Los PNG del kit de libro traen matte BLANCO: sus pixeles
+				// transparentes guardan RGB blanco.  El resize del canvas
+				// resetea el estado del contexto (imageSmoothingEnabled
+				// vuelve a true) y el bilinear sangra ese blanco como un
+				// halo alrededor del sprite.  Se aplana el RGB de los
+				// alpha=0 a negro, como ya traen las flechas y la X.
+				// (El resultado vive en un canvas: imgReady lo acepta.)
+				const c = document.createElement("canvas")
+				c.width = img.naturalWidth
+				c.height = img.naturalHeight
+				const x = c.getContext("2d")
+				x.drawImage(img, 0, 0)
+				const d = x.getImageData(0, 0, c.width, c.height)
+				for (let i = 3; i < d.data.length; i += 4) {
+					if (d.data[i] === 0) {
+						d.data[i - 3] = 0
+						d.data[i - 2] = 0
+						d.data[i - 1] = 0
+					}
+				}
+				x.putImageData(d, 0, 0)
+				uiImgs[name] = c
+			}
 			updateHUD = true
 			// Los menus (a diferencia del HUD) no se repintan en cada
 			// frame: si el sprite llega mientras se ve uno, pintarlo ya.
@@ -4128,6 +4454,11 @@ function MineKhan() {
 		return img
 	}
 	function imgReady(img) {
+		// Los sprites con matte limpiado viven en canvas (sin .complete):
+		// solo existen cuando ya cargaron.
+		if (img && img.complete === undefined) {
+			return !!img.width
+		}
 		return !!(img && img.complete && img.naturalWidth)
 	}
 
@@ -4197,6 +4528,18 @@ function MineKhan() {
 	const ITEM_CROISSANT = ITEM_BASE + 4
 	const ITEM_SHIELD = ITEM_BASE + 5
 	const ITEM_BACKPACK = ITEM_BASE + 6
+	const ITEM_BOOK = ITEM_BASE + 7   // id historico: el primer libro (azul pergamino)
+
+	// Libros: 5 tonos de cubierta x 3 papeles = 15 variantes del mismo
+	// item escribible (16 paginas).  tono/papel eligen los sprites del
+	// kit assets_books (portada, hojas, pestañas) y el color de las
+	// pestañas del libro abierto.
+	const BOOK_TONOS = ["azul", "marron", "verde", "rojo", "morado"]
+	const BOOK_PAPELES = ["pergamino", "marfil", "crema"]
+	const BOOK_NOMBRES = {
+		azul: "Azul", marron: "Marron", verde: "Verde", rojo: "Rojo", morado: "Morado",
+		pergamino: "Pergamino", marfil: "Marfil", crema: "Crema"
+	}
 
 	const ITEMS = {
 		[ITEM_BREAD]: { name: "Pan", sprite: "item_bread", food: 4 },
@@ -4206,6 +4549,28 @@ function MineKhan() {
 		[ITEM_SHIELD]: { name: "Escudo", sprite: "item_shield", equip: "chest", shield: true },
 		[ITEM_BACKPACK]: { name: "Mochila", sprite: "item_backpack", equip: "backpack" }
 	}
+	// Las 15 variantes de Libro se registran tras el literal: comparten
+	// TODO el comportamiento (book, 16 paginas, click derecho) y solo
+	// cambian tono/papel/sprite.  El primer id es el ITEM_BOOK historico
+	// para que los libros guardados sigan abriendo (azul pergamino).
+	for (let ti = 0; ti < BOOK_TONOS.length; ti++) {
+		for (let pi = 0; pi < BOOK_PAPELES.length; pi++) {
+			const tono = BOOK_TONOS[ti], papel = BOOK_PAPELES[pi]
+			ITEMS[ITEM_BOOK + ti * BOOK_PAPELES.length + pi] = {
+				name: "Libro " + BOOK_NOMBRES[tono] + " " + BOOK_NOMBRES[papel],
+				sprite: "libro_cerrado_" + tono + "_" + papel,
+				rect: [0, 0, 201, 237],
+				book: true, pages: 16, tono: tono, papel: papel
+			}
+		}
+	}
+
+	// Estado de la escena del libro abierto: el slot REAL del inventario
+	// (objeto con .title/.text/.signed/.chapters/.fontSize) + vista y
+	// par de hojas visibles.  onexit lo limpia.
+	let bookSlot = null
+	let bookView = "cover"   // "cover" (portada) | "pages" (dos hojas)
+	let bookSpread = 0       // par de hojas visible (0..7 con 16 paginas)
 
 	// Slots de equipo del inventario (survival): 4 de ropa + mochila
 	const EQUIP_TIPOS = ["head", "chest", "legs", "boots", "backpack"]
@@ -4217,19 +4582,34 @@ function MineKhan() {
 		return ITEMS[id] !== undefined
 	}
 
-	// Sprite 2D de un item, centrado en (x, y) con el tamano pedido
+	// Sprite 2D de un item, centrado en (x, y) con el tamano pedido.
+	// def.rect = recorte [sx,sy,sw,sh] dentro de la hoja (libros/notas):
+	// se respeta la proporcion original dentro de una caja size x size
+	// (el cover del libro es retrato y la doble pagina apaisada; estirar
+	// a cuadrado los deformaria).
 	function drawItemSprite(x, y, state, size) {
 		const def = ITEMS[state]
 		const img = def && uiImgs[def.sprite]
 		if (!imgReady(img)) {
 			return false
 		}
+		if (def.rect) {
+			const rw = def.rect[2], rh = def.rect[3]
+			let w = size, h = size * rh / rw
+			if (h > size) {
+				h = size
+				w = size * rw / rh
+			}
+			ctx.drawImage(img, def.rect[0], def.rect[1], rw, rh,
+				Math.round(x - w / 2), Math.round(y - h / 2), Math.round(w), Math.round(h))
+			return true
+		}
 		ctx.drawImage(img, x - size / 2, y - size / 2, size, size)
 		return true
 	}
 
 	// Hojas (para la manzana al romperlas)
-	const LEAF_IDS = [blockIds.leaves, blockIds.justLeaves, blockIds.altLeaves, blockIds.grassLeaves].filter(id => id !== undefined)
+	const LEAF_IDS = [blockIds.leaves, blockIds.birchLeaves, blockIds.blossomLeaves, blockIds.justLeaves, blockIds.altLeaves, blockIds.grassLeaves].filter(id => id !== undefined)
 	function esHoja(id) {
 		return LEAF_IDS.indexOf(id) !== -1
 	}
@@ -4246,6 +4626,30 @@ function MineKhan() {
 	loadUiImg("bread_empty", "png/menu/ui/survival/bread_empty.png")
 	loadUiImg("icon_bolt", "png/menu/ui/survival/icon_bolt.png")
 	loadUiImg("slot_equip", "png/menu/ui/inventory/slot_equip.png")
+
+	// Kit del libro (png/assets_books): 15 portadas cerradas (201x237)
+	// + 15 libros abiertos (403x241) (tono x papel), pestañas del color
+	// del papel (Portada) y de la cubierta (capitulos), flechas de
+	// direccion inequivoca y el icono de cerrar (hover = escalado, el
+	// kit trae uno solo).  TODOS con clean=true: aplanan el matte blanco
+	// de sus transparentes para que nunca sangren como halo (ver
+	// loadUiImg).  El arte pulido ya trae sus filos limpios: no se
+	// repinta nada del contorno.
+	for (const tono of BOOK_TONOS) {
+		for (const papel of BOOK_PAPELES) {
+			loadUiImg("libro_cerrado_" + tono + "_" + papel,
+				"png/assets_books/libros/cerrado/libro_cerrado_" + tono + "_" + papel + ".png", true)
+			loadUiImg("libro_abierto_" + tono + "_" + papel,
+				"png/assets_books/libros/abierto/libro_abierto_" + tono + "_" + papel + ".png", true)
+		}
+		loadUiImg("pestana_cubierta_" + tono, "png/assets_books/pestanas/pestana_cubierta_" + tono + ".png", true)
+	}
+	for (const papel of BOOK_PAPELES) {
+		loadUiImg("pestana_papel_" + papel, "png/assets_books/pestanas/pestana_papel_" + papel + ".png", true)
+	}
+	loadUiImg("flecha_izquierda", "png/assets_books/flechas/flecha_izquierda.png", true)
+	loadUiImg("flecha_derecha", "png/assets_books/flechas/flecha_derecha.png", true)
+	loadUiImg("icono_x", "png/assets_books/iconos/icono_x.png", true)
 
 	// Survival hearts above the hotbar (10 hearts = 20 HP, half hearts)
 	function drawHealthBar() {
@@ -5179,6 +5583,12 @@ function MineKhan() {
 		if(!hitBox.pos || !holding) {
 			return
 		}
+		// Los items (comida, escudo, libro...) NUNCA se colocan como
+		// bloques: blockData[id-de-item] no existe y reventaria.  El
+		// mousedown ya lo filtra, pero el auto-place del tick no.
+		if (isItemId(holding)) {
+			return
+		}
 		// Survival: you can only place blocks in the selected hotbar slot
 		if (gameMode === "survival") {
 			let slot = inventory.hotbar[inventory.hotbarSlot]
@@ -5233,6 +5643,10 @@ function MineKhan() {
 		sphere = new Int8Array(blocks)
 	}
 
+	// Cuevas profundas: hasta esta altura el aire tallado queda inundado
+	// de lava y el suelo de piedra que lo sostiene pasa a obsidiana.
+	const LAVA_LEVEL = 11
+
 	function isCave(x, y, z) {
 		// Generate a 3D rigid multifractal noise shell.
 		// Then generate another one with different coordinates.
@@ -5283,6 +5697,12 @@ function MineKhan() {
 		if (sourceData && sourceData.cross) {
 			return 1
 		}
+		// OJO: las copas NO se cullan entre si.  El nucleo de la copa es
+		// un cubo de 0.75, asi que las caras de dos hojas apiladas NUNCA
+		// son coplanares (no hay z-fighting que evitar por culling) y,
+		// si se cullaran, el interior de la copa quedaria hueco: a
+		// traves de los huecos se veria el tronco en vez de las hojas
+		// de los bloques de detras.
 
 		let sourceRange = 3
 		let hiderRange = 3
@@ -5594,12 +6014,16 @@ function MineKhan() {
 				shapeVerts = block.shape.verts
 				shapeTexVerts = block.shape.texVerts
 				let plant = block.variants ? plantTile(block, x2, z2) : null
+				// Variante del tile para ESTE bloque (misma para todas sus
+				// caras, como la rotacion aleatoria de Minecraft).  Con la
+				// Y en el hash: los muros varian igual que los suelos.
+				let vi = plant ? 0 : posHash3(x2, y2, z2) % PROC_VARIANTS
 
 				let texNum = 0
 				for (let n = 0; n < 6; n++) {
 					side = blockSides[n]
 					if (sides & Block[side]) {
-						shadows = block.cross ? CROSS_SHADOW : getShadows[side](x, y, z, blocks)
+						let faceShadows = block.cross ? CROSS_SHADOW : getShadows[side](x, y, z, blocks)
 						let directionalFaces = shapeVerts[Sides[side]]
 						// if (directionalFaces.length > 1) {
 						// 	let average = (shadows[0] + shadows[1] + shadows[2] + shadows[3]) / 4
@@ -5610,8 +6034,40 @@ function MineKhan() {
 						// }
 						for (let facei = 0; facei < directionalFaces.length; facei++) {
 							verts = directionalFaces[facei]
-							let texName = plant || tex[texNum]
-							let texIndex = textureMap[texName]
+							// Los discos cruzan el bloque por el CENTRO: el AO del
+							// slot esta pensado para la cara del cubo (en el borde)
+							// y sobre el disco queda girado.  Luz plana, como las
+							// plantas (y como el "shade": false del modelo MC).
+							shadows = verts.tex === "DISC" ? CROSS_SHADOW : faceShadows
+							let texName = plant || verts.tex || tex[texNum]
+							// Los discos de la copa piden el tile enmascarado
+							// del MISMO bloque: leaves -> leavesDisc, etc.
+							if (texName === "DISC") {
+								texName = tex[texNum] + "Disc"
+							}
+							// ANTI-PARPADEO: los discos coplanares de dos
+							// bloques vecinos (apilados, misma capa,
+							// diagonal o antidiagonal) se separan a lo
+							// largo de la normal del quad: este bloque los
+							// desplaza ((x+2y+4z) mod 8) * 0.04 — ninguna
+							// direccion vecina da diferencia 0: nunca
+							// coinciden, no hay z-fighting.
+							let ox = 0, oy = 0, oz = 0
+							if (verts.tex === "DISC") {
+								const ax = verts[3] - verts[0], ay = verts[4] - verts[1], az = verts[5] - verts[2]
+								const bx = verts[9] - verts[0], by = verts[10] - verts[1], bz = verts[11] - verts[2]
+								let nx = ay * bz - az * by
+								let ny = az * bx - ax * bz
+								let nz = ax * by - ay * bx
+								const len = Math.hypot(nx, ny, nz) || 1
+								const e = ((((x2 + 2 * y2 + 4 * z2) % 8) + 8) % 8) * 0.04
+								ox = nx / len * e
+								oy = ny / len * e
+								oz = nz / len * e
+							}
+							let vars = plant ? null : variantTiles[texName]
+							// % length: variantes horneadas (8 hoy).
+							let texIndex = vars ? vars[vi % vars.length] : textureMap[texName]
 							if (texIndex === undefined) {
 								texIndex = textureMap[tex[texNum]]
 							}
@@ -5620,30 +6076,30 @@ function MineKhan() {
 							ty = texVerts[1]
 							texShapeVerts = shapeTexVerts[n][facei]
 
-							barray[index] = verts[0] + x2
-							barray[index+1] = verts[1] + y2
-							barray[index+2] = verts[2] + z2
+							barray[index] = verts[0] + x2 + ox
+							barray[index+1] = verts[1] + y2 + oy
+							barray[index+2] = verts[2] + z2 + oz
 							barray[index+3] = tx + texShapeVerts[0]
 							barray[index+4] = ty + texShapeVerts[1]
 							barray[index+5] = shadows[0]
 
-							barray[index+6] = verts[3] + x2
-							barray[index+7] = verts[4] + y2
-							barray[index+8] = verts[5] + z2
+							barray[index+6] = verts[3] + x2 + ox
+							barray[index+7] = verts[4] + y2 + oy
+							barray[index+8] = verts[5] + z2 + oz
 							barray[index+9] = tx + texShapeVerts[2]
 							barray[index+10] = ty + texShapeVerts[3]
 							barray[index+11] = shadows[1]
 
-							barray[index+12] = verts[6] + x2
-							barray[index+13] = verts[7] + y2
-							barray[index+14] = verts[8] + z2
+							barray[index+12] = verts[6] + x2 + ox
+							barray[index+13] = verts[7] + y2 + oy
+							barray[index+14] = verts[8] + z2 + oz
 							barray[index+15] = tx + texShapeVerts[4]
 							barray[index+16] = ty + texShapeVerts[5]
 							barray[index+17] = shadows[2]
 
-							barray[index+18] = verts[9] + x2
-							barray[index+19] = verts[10] + y2
-							barray[index+20] = verts[11] + z2
+							barray[index+18] = verts[9] + x2 + ox
+							barray[index+19] = verts[10] + y2 + oy
+							barray[index+20] = verts[11] + z2 + oz
 							barray[index+21] = tx + texShapeVerts[6]
 							barray[index+22] = ty + texShapeVerts[7]
 							barray[index+23] = shadows[3]
@@ -5663,6 +6119,18 @@ function MineKhan() {
 					for (let y = this.y; y < wy; y++) {
 						if (isCave(x, y, z)) {
 							carveSphere(x, y, z)
+						}
+					}
+					// Cuevas inundadas de lava por debajo de LAVA_LEVEL:
+					// solo el aire realmente tallado se llena (de abajo
+					// arriba) y el suelo de piedra que lo sostiene pasa a
+					// obsidiana.
+					let tope = Math.min(wy - 1, LAVA_LEVEL)
+					for (let y = this.y; y <= tope; y++) {
+						if (world.getBlock(x, y, z) !== blockIds.air) continue
+						world.setBlock(x, y, z, blockIds.lava, true)
+						if (y > 0 && world.getBlock(x, y - 1, z) === blockIds.stone) {
+							world.setBlock(x, y - 1, z, blockIds.obsidian, true)
 						}
 					}
 				}
@@ -5808,12 +6276,17 @@ function MineKhan() {
 						top = ground + Math.floor(4.5 + random(2.5))
 						rand = Math.floor(random(4096))
 						let tree = random() < 0.6 ? blockIds.oakLog : ++top && blockIds.birchLog
+						// Cada arbol con su copa: el abedul trae birchLeaves
+						// y 1 de cada 8 sale FLORADO (blossom rosa del
+						// generador).  random() es el del chunk: determinista.
+						let hoja = random() < 0.125 ? blockIds.blossomLeaves
+							: tree === blockIds.birchLog ? blockIds.birchLeaves : blockIds.leaves
 
 						//Center
 						for (let j = ground + 1; j <= top; j++) {
 							this.setBlock(i, j, k, tree)
 						}
-						this.setBlock(i, top + 1, k, blockIds.leaves)
+						this.setBlock(i, top + 1, k, hoja)
 						this.setBlock(i, ground, k, blockIds.dirt)
 
 						//Bottom leaves
@@ -5824,10 +6297,10 @@ function MineKhan() {
 										place = rand & 1
 										rand >>>= 1
 										if (place) {
-											world.spawnBlock(wx + x, top - 2, wz + z, blockIds.leaves)
+											world.spawnBlock(wx + x, top - 2, wz + z, hoja)
 										}
 									} else {
-										world.spawnBlock(wx + x, top - 2, wz + z, blockIds.leaves)
+										world.spawnBlock(wx + x, top - 2, wz + z, hoja)
 									}
 								}
 							}
@@ -5841,10 +6314,10 @@ function MineKhan() {
 										place = rand & 1
 										rand >>>= 1
 										if (place) {
-											world.spawnBlock(wx + x, top - 1, wz + z, blockIds.leaves)
+											world.spawnBlock(wx + x, top - 1, wz + z, hoja)
 										}
 									} else {
-										world.spawnBlock(wx + x, top - 1, wz + z, blockIds.leaves)
+										world.spawnBlock(wx + x, top - 1, wz + z, hoja)
 									}
 								}
 							}
@@ -5858,20 +6331,20 @@ function MineKhan() {
 										place = rand & 1
 										rand >>>= 1
 										if (place) {
-											world.spawnBlock(wx + x, top, wz + z, blockIds.leaves)
+											world.spawnBlock(wx + x, top, wz + z, hoja)
 										}
 									} else {
-										world.spawnBlock(wx + x, top, wz + z, blockIds.leaves)
+										world.spawnBlock(wx + x, top, wz + z, hoja)
 									}
 								}
 							}
 						}
 
 						//Top leaves
-						world.spawnBlock(wx + 1, top + 1, wz, blockIds.leaves)
-						world.spawnBlock(wx, top + 1, wz - 1, blockIds.leaves)
-						world.spawnBlock(wx, top + 1, wz + 1, blockIds.leaves)
-						world.spawnBlock(wx - 1, top + 1, wz, blockIds.leaves)
+						world.spawnBlock(wx + 1, top + 1, wz, hoja)
+						world.spawnBlock(wx, top + 1, wz - 1, hoja)
+						world.spawnBlock(wx, top + 1, wz + 1, hoja)
+						world.spawnBlock(wx - 1, top + 1, wz, hoja)
 					}
 
 					// Surface plants (crossed grass). Runs after the tree pass,
@@ -6196,7 +6669,10 @@ function MineKhan() {
 						chunk.setBlock(i, gen - 2, k, blockIds.sand)
 						chunk.setBlock(i, gen - 3, k, blockIds.sandStone)
 					} else {
-						if (gen > biomeSettings.peakHeight) {
+						if (gen > biomeSettings.peakHeight + 4) {
+							// Snow cap: the very top of the high peaks
+							chunk.setBlock(i, gen, k, blockIds.snow)
+						} else if (gen > biomeSettings.peakHeight) {
 							// Stone peaks on tall mountains (stony peaks style)
 							chunk.setBlock(i, gen, k, blockIds.stone)
 						} else {
@@ -6348,9 +6824,12 @@ function MineKhan() {
 			if (gameMode !== "survival" && Key.leftMouse && !Key.control && p.lastBreak < Date.now() - 250 && screen === "play") {
 				changeWorldBlock(0)
 			}
-			if ((Key.rightMouse || Key.leftMouse && Key.control) && p.lastPlace < Date.now() - 250) {
-				newWorldBlock()
-			}
+		// Auto-place con boton derecho mantenido: SOLO en play.  El
+		// inventario y el libro corren tick() via drawPlayBackdrop y un
+		// click derecho ahi no debe colocar nada.
+		if (screen === "play" && (Key.rightMouse || Key.leftMouse && Key.control) && p.lastPlace < Date.now() - 250) {
+			newWorldBlock()
+		}
 			if (gameMode !== "survival" && Key.leftMouse && p.autoBreak && !Key.control) {
 				changeWorldBlock(0)
 			}
@@ -7258,17 +7737,41 @@ function MineKhan() {
 		let name = vs[posHash(x, z) & 3] + "_" + plantBiomeSuffix(x, z)
 		return textureMap[name] !== undefined ? name : vs[0] + "_plains"
 	}
+	// Variantes de los tiles ProcBlocks: cada textura procedural se hornea
+	// PROC_VARIANTS veces (semilla 0..N-1) y el mesher elige la del bloque
+	// por posicion.  Es el modo 'variants' de ProcBlocks: un manto del mismo
+	// bloque deja de repetir el dibujo bloque a bloque.
+	// Presupuesto del atlas de 512x512 (1024 tiles): claves + 36 tintes +
+	// (PROC_VARIANTS-1) por textura proc + (STRING_VARIANTS-1) por b36
+	// -> 144 + 36 + 161 + 324 = 665 como mucho.
+	const PROC_VARIANTS = 8
+	// Las texturas fijas (png a b36) no tienen semilla: sus variantes son
+	// simetrias del propio tile.  Solo espejo horizontal, espejo vertical y
+	// media vuelta — los giros de 90 grados tumbarian la corteza.
+	const STRING_VARIANTS = 4
+	const STRING_FLIPS = [ null, [1, 0], [0, 1], [1, 1] ]
+	// Igual que posHash pero con la Y: muros y suelos varian por igual.
+	// Determinista (sin semilla del mundo): la variante nunca parpadea.
+	function posHash3(x, y, z) {
+		let h = Math.imul(x | 0, 374761393) + Math.imul(y | 0, 2246822519) + Math.imul(z | 0, 668265263) | 0
+		h = Math.imul(h ^ h >>> 13, 1274126177)
+		return (h ^ h >>> 16) >>> 0
+	}
 	function initTextures() {
-		let textureSize = 256
-		let scale = 1 / 16
+		// Atlas de TEXTURE_SIZE px (32x32 tiles de 16 px = 1024 huecos).
+		// Sobra margen para las variantes de cada textura (PROC_VARIANTS).
+		let textureSize = TEXTURE_SIZE
+		let tilesPerRow = textureSize / 16
+		let textureStride = textureSize * 4
+		let scale = 1 / tilesPerRow
 		let texturePixels = new Uint8Array(textureSize * textureSize * 4)
 		textureMap = {}
 		textureCoords = []
 
 		setPixel = function(textureNum, x, y, r, g, b, a) {
-			let texX = textureNum & 15
-			let texY = textureNum >> 4
-			let offset = (texY * 16 + y) * 1024 + texX * 64 + x * 4
+			let texX = textureNum % tilesPerRow
+			let texY = (textureNum / tilesPerRow) | 0
+			let offset = (texY * 16 + y) * textureStride + texX * 64 + x * 4
 			texturePixels[offset] = r
 			texturePixels[offset + 1] = g
 			texturePixels[offset + 2] = b
@@ -7296,9 +7799,9 @@ function MineKhan() {
 		{
 			// Specify the texture coords for each index
 			const s = scale
-			for (let i = 0; i < 256; i++) {
-				let texX = i & 15
-				let texY = i >> 4
+			for (let i = 0; i < tilesPerRow * tilesPerRow; i++) {
+				let texX = i % tilesPerRow
+				let texY = (i / tilesPerRow) | 0
 				let offsetX = texX * s
 				let offsetY = texY * s
 				textureCoords.push(new Float32Array([ offsetX, offsetY, offsetX + s, offsetY, offsetX + s, offsetY + s, offsetX, offsetY + s ]))
@@ -7306,16 +7809,66 @@ function MineKhan() {
 
 			// Set all of the textures into 1 big tiled texture
 			let n = 0
+			variantTiles = {}
 			for (let i in textures) {
+				// El tile BASE de la clave: textureMap apunta siempre a
+				// el (iconos, items tirados), las variantes van detras.
+				let base = n
 				if (typeof textures[i] === "function") {
-					textures[i](n)
+					textures[i](base, 0)
+					// Variantes: 8 para las ProcBlocks (semillas) y 8 para
+					// las hojas del generador (semillas del RNG Lehmer).
+					// El mesher elige una por posicion (posHash3).
+					let count = /\b(procTile|hojaTile)\b/.test(textures[i]) ? PROC_VARIANTS : 0
+					if (count > 1) {
+						let tiles = [base]
+						for (let v = 1; v < count; v++) {
+							textures[i](++n, v)
+							tiles.push(n)
+						}
+						variantTiles[i] = tiles
+					}
 				} else if (typeof textures[i] === "string") {
 					let pix = getPixels(textures[i])
 					for (let j = 0; j < pix.length; j += 4) {
-						setPixel(n, j >> 2 & 15, j >> 6, pix[j], pix[j+1], pix[j+2], pix[j+3])
+						setPixel(base, j >> 2 & 15, j >> 6, pix[j], pix[j+1], pix[j+2], pix[j+3])
+					}
+					// Texturas fijas (png a b36): variantes por simetria del
+					// propio tile.  Solo espejos y media vuelta, que
+					// conservan la orientacion de vetas y juntas (la
+					// corteza de abedil sigue vertical).  Las plantas ya
+					// tienen su sistema de variantes y un tile simetrico
+					// (lana, hormigon) reutiliza el base: no gasta hueco.
+					if (STRING_VARIANTS > 1 && plantTextureNames.indexOf(i) < 0) {
+						let tiles = [base]
+						for (let v = 1; v < STRING_VARIANTS; v++) {
+							let flip = STRING_FLIPS[v]
+							let igual = true
+							for (let p = 0; p < 256; p++) {
+								let x = p & 15, y = p >> 4
+								let o = ((flip[1] ? 15 - y : y) * 16 + (flip[0] ? 15 - x : x)) * 4
+								if (pix[p * 4] !== pix[o] || pix[p * 4 + 1] !== pix[o + 1]
+									|| pix[p * 4 + 2] !== pix[o + 2] || pix[p * 4 + 3] !== pix[o + 3]) {
+									igual = false
+									break
+								}
+							}
+							if (igual) {
+								tiles.push(base)
+								continue
+							}
+							++n
+							for (let p = 0; p < 256; p++) {
+								let x = p & 15, y = p >> 4
+								let o = ((flip[1] ? 15 - y : y) * 16 + (flip[0] ? 15 - x : x)) * 4
+								setPixel(n, x, y, pix[o], pix[o + 1], pix[o + 2], pix[o + 3])
+							}
+							tiles.push(n)
+						}
+						variantTiles[i] = tiles
 					}
 				}
-				textureMap[i] = n
+				textureMap[i] = base
 				n++
 			}
 
@@ -7336,7 +7889,7 @@ function MineKhan() {
 					}
 					for (let y = 0; y < 16; y++) {
 						for (let x = 0; x < 16; x++) {
-							let o = ((src >> 4) * 16 + y) * 1024 + (src & 15) * 64 + x * 4
+							let o = (((src / tilesPerRow) | 0) * 16 + y) * textureStride + (src % tilesPerRow) * 64 + x * 4
 							setPixel(n, x, y,
 								texturePixels[o] * tint[0] / 255,
 								texturePixels[o + 1] * tint[1] / 255,
@@ -7371,7 +7924,7 @@ function MineKhan() {
 		gl.uniform1i(glCache.uSampler, 0)
 
 		// Dirt texture for the background
-		let dirtPixels = new Uint8Array(getPixels(textures.dirt))
+		let dirtPixels = new Uint8Array(procPixels("dirt"))
 		dirtTexture = gl.createTexture()
 		gl.activeTexture(gl.TEXTURE1)
 		gl.bindTexture(gl.TEXTURE_2D, dirtTexture)
@@ -7486,24 +8039,12 @@ function MineKhan() {
 		}
 		return catalogCache
 	}
-	function drawInv() {
-		let x = 0
-		let y = 0
-		let L = invLayout()
-		let s = L.s
-		let survival = gameMode === "survival"
-		let showInv = L.view === "inventory"
-		let list = catalogIds()
-		let pageCount = showInv ? 1 : Math.max(1, Math.ceil(list.length / L.perPage))
-		if (inventory.page > pageCount - 1) inventory.page = pageCount - 1
-		if (inventory.page < 0) inventory.page = 0
-		let page = inventory.page
-		let pageSize = showInv ? 27 : Math.max(0, Math.min(list.length - page * L.perPage, L.perPage))
-
-		// El inventario NO pausa el juego: mismo subconjunto de updates que
-		// drawScreens.play (sin controles/fisica/vida del jugador, que
-		// queda congelado donde estaba).  world.tick() y las entidades
-		// siguen corriendo mientras dura la E.
+	// Backdrop compartido por el inventario y el libro: el juego NO pausa
+	// (mismo subconjunto de updates que drawScreens.play, sin controles/
+	// fisica/vida del jugador) y el mundo se compone PRIMERO en2D para
+	// que la UI del kit quede ENCIMA.  Extraido de drawInv para reusarlo
+	// en drawBook.
+	function drawPlayBackdrop() {
 		updateDrops()
 		updateSurvival()
 		if (window.updateIdentidades) window.updateIdentidades()
@@ -7527,6 +8068,23 @@ function MineKhan() {
 		// El mundo se compone PRIMERO en2D: los slots del kit son opacos
 		// y tienen que quedar ENTRE el mundo y los iconos de los items.
 		ctx.drawImage(gl.canvas, 0, 0)
+	}
+
+	function drawInv() {
+		let x = 0
+		let y = 0
+		let L = invLayout()
+		let s = L.s
+		let survival = gameMode === "survival"
+		let showInv = L.view === "inventory"
+		let list = catalogIds()
+		let pageCount = showInv ? 1 : Math.max(1, Math.ceil(list.length / L.perPage))
+		if (inventory.page > pageCount - 1) inventory.page = pageCount - 1
+		if (inventory.page < 0) inventory.page = 0
+		let page = inventory.page
+		let pageSize = showInv ? 27 : Math.max(0, Math.min(list.length - page * L.perPage, L.perPage))
+
+		drawPlayBackdrop()
 
 		// Celdas con los sprites del kit: slot_empty por celda (grid 9x3
 		// + hotbar), slot_selected en el slot activo y slot_hover en el
@@ -7696,6 +8254,798 @@ function MineKhan() {
 			}
 		}
 	}
+
+	// ------------------------------------------------------------------
+	// Escena del libro (15 variantes: 5 tonos x 3 papeles, 16 paginas):
+	// se abre con click derecho con el item en la mano.  El libro vive
+	// en la ESQUINA INFERIOR DERECHA en un widget grande (~42% del
+	// area de pantalla: 65% de ancho x 65% de alto), SIN velo: el mundo
+	// se ve entero detras.  Dos vistas conmutables con pestañas:
+	//   - Portada (libro_cerrado_<tono>_<papel>): escribes el titulo en
+	//     la etiqueta de la tapa; aqui vive el boton Firmar (bloquea
+	//     todo, estilo MC).
+	//   - Hojas (libro_abierto_<tono>_<papel>): un par de paginas
+	//     escribibles; las flechas de abajo son la unica forma de girar
+	//     par por par, y A- / A+ graduan el tamano de la letra (se
+	//     guarda por libro).
+	// Pestañas de capitulo (max 6): click = saltar al par marcado,
+	// click derecho = marcar/desmarcar en el par actual (viven en el
+	// slot y viajan a IndexedDB con save()).  La pestana Portada usa el
+	// color del PAPEL del libro y las de capitulo el color de la
+	// CUBIERTA (pestana_papel_* / pestana_cubierta_*); la activa se
+	// dibuja levantada.
+	// La letra de escritura es Pirata One (peticion expresa) en las tres
+	// zonas HTML (#bookcover, #bookpageL, #bookpageR).
+	// ------------------------------------------------------------------
+	// Caja del widget: fraccion de pantalla (0.65 x 0.65 ~ 42% del
+	// area), margen al borde y alturas de la fila de pestañas y del pie.
+	const BOOK_BOX = { w: 0.65, h: 0.65, margin: 14, tabs: 36, foot: 40 }
+	// Fracciones medidas sobre los PNGs reales del kit assets_books
+	// (arte pulido, recortado sin bordes; identicas en las 15
+	// variantes, solo cambia el color):
+	// libro_cerrado 201x237 -> etiqueta clara x40..160, y40..120 (con
+	// margen interior para no pisar el marco de la placa).
+	const COVER_RECT = { x: 44 / 201, y: 44 / 237, w: 112 / 201, h: 72 / 237 }
+	// libro_abierto 403x241 -> hoja izq x26..175, hoja der x227..376,
+	// interior claro y10..~203 (con margen bajo la banda de sombra
+	// superior).  La hoja derecha cede su esquina superior derecha al
+	// icono X (ver drawBookClose).
+	const PAGE_L_RECT = { x: 28 / 403, y: 14 / 241, w: 147 / 403, h: 189 / 241 }
+	const PAGE_R_RECT = { x: 229 / 403, y: 14 / 241, w: 126 / 403, h: 189 / 241 }
+	// Colores dominantes medidos de los PNGs (para los fallbacks de
+	// dibujo mientras cargan las imagenes).
+	const BOOK_COVER_COLORS = {
+		azul: "rgb(107, 129, 161)", marron: "rgb(148, 109, 74)", verde: "rgb(110, 152, 124)",
+		rojo: "rgb(157, 79, 86)", morado: "rgb(136, 102, 161)"
+	}
+	const BOOK_PAPER_COLORS = {
+		pergamino: "rgb(218, 183, 146)", marfil: "rgb(254, 246, 222)", crema: "rgb(254, 225, 184)"
+	}
+	// Zonas clicables de la escena (pestañas/flechas/X/Firmar): se
+	// reconstruyen en cada drawBook y las consulta el mousedown.
+	let bookZones = []
+
+	// Geometria del widget: caja en la esquina inferior derecha y el
+	// sprite de la vista actual aspect-fit dentro (menos la fila de
+	// pestañas arriba y, en vista hojas con varios pares, el pie de
+	// flechas abajo).  El sprite se ancla a la DERECHA de la caja.
+	function bookLayout() {
+		const bw = Math.round(width * BOOK_BOX.w)
+		const bh = Math.round(height * BOOK_BOX.h)
+		const bx = width - bw - BOOK_BOX.margin
+		const by = height - bh - BOOK_BOX.margin
+		const tabsH = Math.round(Math.min(BOOK_BOX.tabs, bh * 0.2))
+		// El pie vive en AMBAS vistas: par de flechas en hojas y flecha
+		// de "abrir el libro" en portada.
+		const footH = Math.round(Math.min(BOOK_BOX.foot, bh * 0.18))
+		const spr = bookView === "cover" ? { w: 201, h: 237 } : { w: 403, h: 241 }
+		const availW = bw
+		const availH = Math.max(60, bh - tabsH - footH)
+		const scale = Math.min(availW / spr.w, availH / spr.h)
+		const sw = Math.round(spr.w * scale)
+		const sh = Math.round(spr.h * scale)
+		return {
+			bx: bx, by: by, bw: bw, bh: bh, tabsH: tabsH, footH: footH,
+			tabS: Math.max(20, Math.min(30, Math.round(bw * 0.06))),
+			scale: scale,
+			sx: bx + bw - sw,
+			sy: by + tabsH + Math.round((availH - sh) / 2),
+			sw: sw, sh: sh,
+			footY: by + bh - footH
+		}
+	}
+
+	function drawBook() {
+		// El mundo se ve entero (sin velo): el widget del libro flota en
+		// la esquina inferior derecha.
+		drawPlayBackdrop()
+		if (!bookSlot) {
+			return
+		}
+		const L = bookLayout()
+		const def = ITEMS[bookSlot.state]
+		// Defensa: si algo dejo el suavizado activado, el sprite
+		// escalado sangraria los RGB de sus transparentes.
+		ctx.imageSmoothingEnabled = false
+		const img = uiImgs["libro_" + (bookView === "cover" ? "cerrado" : "abierto") + "_" + def.tono + "_" + def.papel]
+		if (imgReady(img)) {
+			ctx.drawImage(img, L.sx, L.sy, L.sw, L.sh)
+		} else if (bookView === "cover") {
+			// Fallback mientras carga: tapa del tono + etiqueta del papel.
+			ctx.fillStyle = BOOK_COVER_COLORS[def.tono] || "rgb(107, 129, 161)"
+			ctx.fillRect(L.sx, L.sy, L.sw, L.sh)
+			ctx.fillStyle = BOOK_PAPER_COLORS[def.papel] || "#efe0c0"
+			ctx.fillRect(L.sx + L.sw * COVER_RECT.x, L.sy + L.sh * COVER_RECT.y,
+				L.sw * COVER_RECT.w, L.sh * COVER_RECT.h)
+		} else {
+			// Fallback: dos hojas del papel + lomo oscuro.
+			ctx.fillStyle = BOOK_PAPER_COLORS[def.papel] || "#efe0c0"
+			ctx.fillRect(L.sx + L.sw * 0.05, L.sy + L.sh * 0.05, L.sw * 0.42, L.sh * 0.88)
+			ctx.fillRect(L.sx + L.sw * 0.53, L.sy + L.sh * 0.05, L.sw * 0.42, L.sh * 0.88)
+			ctx.fillStyle = "#483843"
+			ctx.fillRect(L.sx + L.sw * 0.485, L.sy + L.sh * 0.05, L.sw * 0.03, L.sh * 0.88)
+		}
+		// Controles dibujados + zonas clicables (reconstruidas aqui:
+		// trackMouse repinta la escena a cada mousemove, asi que el
+		// hover/cursor se actualiza solo).
+		bookZones.length = 0
+		drawBookTabs(L)
+		drawBookFoot(L)
+		drawBookClose(L)
+		if (bookView === "cover") {
+			drawBookSign(L)
+		}
+		layoutBookTexts(L)
+	}
+
+	// Pestaña estirada en horizontal: bordes originales + centro
+	// estirado (la pestana es un cuadro plano: queda sin costura).
+	function drawTabSprite(img, x, y, w, h) {
+		if (!imgReady(img)) {
+			return false
+		}
+		const iw = img.width
+		const e = Math.min(9, iw >> 2)
+		ctx.drawImage(img, 0, 0, e, img.height, x, y, e, h)
+		ctx.drawImage(img, e, 0, iw - 2 * e, img.height, x + e, y, w - 2 * e, h)
+		ctx.drawImage(img, iw - e, 0, e, img.height, x + w - e, y, e, h)
+		return true
+	}
+
+	// Capitulos del libro: 4 pestañas.  slot.chapters = pagina izquierda
+	// del par marcado (-1 = vacia) y slot.chapNames = nombre opcional.
+	// Persisten en IndexedDB con el resto del slot.  Los libros viejos
+	// con 6 capitulos conservan los 4 primeros.
+	function bookChapters(slot) {
+		if (!Array.isArray(slot.chapters)) {
+			slot.chapters = []
+		}
+		while (slot.chapters.length < 4) {
+			slot.chapters.push(-1)
+		}
+		if (slot.chapters.length > 4) {
+			slot.chapters.length = 4
+		}
+		return slot.chapters
+	}
+	function bookChapNames(slot) {
+		if (!Array.isArray(slot.chapNames)) {
+			slot.chapNames = []
+		}
+		while (slot.chapNames.length < 4) {
+			slot.chapNames.push("")
+		}
+		if (slot.chapNames.length > 4) {
+			slot.chapNames.length = 4
+		}
+		return slot.chapNames
+	}
+	// Pestana cuyo nombre se esta editando (-1 = ninguna)
+	let bookChapterEdit = -1
+
+	// Geometria de la fila [Portada][1][2][3][4]: la comparten
+	// drawBookTabs y openBookChapterName (misma formula, sin deriva).
+	function bookTabsLayout(L) {
+		const th = L.tabS
+		const gap = Math.max(2, Math.round(th * 0.12))
+		const portW = Math.round(th * 2.3)
+		const total = portW + 4 * th + 4 * gap
+		const x0 = L.bx + L.bw - total
+		return {
+			th: th, gap: gap, portW: portW, x0: x0,
+			y: L.by + (L.tabsH - th),
+			portCx: x0 + portW / 2,
+			capCx: i => x0 + portW + gap + i * (th + gap) + th / 2
+		}
+	}
+
+	// Click derecho en una pestana de capitulo:
+	//   - vacia: se marca en el par actual y abre el nombre
+	//   - marcada en el par que ESTAS viendo: quita el capitulo (y su nombre)
+	//   - marcada en otro par: abre el nombre para renombrarla
+	function rightClickBookChapter(i) {
+		if (!bookSlot || screen !== "book") {
+			return
+		}
+		const ch = bookChapters(bookSlot)
+		if (ch[i] < 0) {
+			ch[i] = bookSpread * 2
+			drawScreens.book()
+			openBookChapterName(i)
+		} else if (bookView === "pages" && (ch[i] >> 1) === bookSpread) {
+			ch[i] = -1
+			bookChapNames(bookSlot)[i] = ""
+			closeBookChapterName(false)
+			drawScreens.book()
+		} else {
+			openBookChapterName(i)
+		}
+	}
+
+	// Mini-input HTML bajo la pestaña para escribir el nombre del
+	// capitulo (Enter o perder el foco = guardar, Escape = cancelar).
+	function openBookChapterName(i) {
+		if (!bookchapter || !bookSlot) {
+			return
+		}
+		const L = bookLayout()
+		const T = bookTabsLayout(L)
+		bookChapterEdit = i
+		bookchapter.value = bookChapNames(bookSlot)[i] || ""
+		bookchapter.classList.remove("hidden")
+		const w = Math.min(160, L.bw - 8)
+		let x = T.capCx(i) - w / 2
+		x = Math.max(4, Math.min(x, width - w - 4))
+		bookchapter.style.left = Math.round(x) + "px"
+		bookchapter.style.top = Math.round(T.y + T.th + 6) + "px"
+		bookchapter.style.width = Math.round(w) + "px"
+		bookchapter.focus()
+		bookchapter.select()
+	}
+	function closeBookChapterName(save) {
+		if (bookChapterEdit < 0 || !bookchapter) {
+			return
+		}
+		const i = bookChapterEdit
+		bookChapterEdit = -1
+		bookchapter.classList.add("hidden")
+		bookchapter.blur()
+		if (save && bookSlot) {
+			bookChapNames(bookSlot)[i] = (bookchapter.value || "").trim().slice(0, 14)
+		}
+		bookchapter.value = ""
+		if (screen === "book") {
+			drawScreens.book()
+		}
+	}
+
+	// Fila de pestañas sobre el sprite, alineada a la derecha:
+	// [Portada] [1] [2] [3] [4].  Portada = pestana del color del PAPEL
+	// (tinta oscura); capitulos = color de la CUBIERTA (texto beige).
+	// Las etiquetas van SIN negrilla (solo fillText).  La activa se
+	// dibuja LEVANTADA 3px; asignada a otro par 0.8; vacia 0.45.  Cada
+	// capitulo muestra su NOMBRE (o su numero) ajustado al ancho.
+	// Click izquierdo = saltar; click derecho = marcar y nombrar /
+	// renombrar / quitar (ver rightClickBookChapter); el hover explica.
+	function drawBookTabs(L) {
+		const def = ITEMS[bookSlot.state]
+		const ch = bookChapters(bookSlot)
+		const names = bookChapNames(bookSlot)
+		const T = bookTabsLayout(L)
+		const th = T.th
+		let x = T.x0
+		const y = T.y
+		ctx.textAlign = "center"
+		ctx.textBaseline = "middle"
+		// Pestana Portada: color del papel del libro
+		const actC = bookView === "cover"
+		ctx.globalAlpha = actC ? 1 : 0.8
+		if (!drawTabSprite(uiImgs["pestana_papel_" + def.papel], x, actC ? y - 3 : y, T.portW, actC ? th + 3 : th)) {
+			ctx.fillStyle = BOOK_PAPER_COLORS[def.papel] || "#efe0c0"
+			ctx.fillRect(x, y, T.portW, th)
+		}
+		ctx.globalAlpha = 1
+		ctx.font = Math.max(9, Math.round(th * 0.42)) + 'px "Pirata One"'
+		ctx.fillStyle = "#5b3a22"
+		ctx.fillText("Portada", x + T.portW / 2, y + th / 2 + 1)
+		if (mouseX >= x && mouseX < x + T.portW && mouseY >= y - 3 && mouseY < y + th) {
+			cursor("pointer")
+		}
+		bookZones.push({ x: x, y: y - 3, w: T.portW, h: th + 3, cb: () => setBookView("cover") })
+		x += T.portW + T.gap
+		// Pestanas de capitulo (4): color de la cubierta del libro
+		for (let i = 0; i < 4; i++) {
+			const c = ch[i]
+			const set = c >= 0
+			const act = set && bookView === "pages" && (c >> 1) === bookSpread
+			ctx.globalAlpha = !set ? 0.45 : (act ? 1 : 0.8)
+			if (!drawTabSprite(uiImgs["pestana_cubierta_" + def.tono], x, act ? y - 3 : y, th, act ? th + 3 : th)) {
+				ctx.fillStyle = BOOK_COVER_COLORS[def.tono] || "rgb(122, 88, 89)"
+				ctx.fillRect(x, y, th, th)
+			}
+			ctx.globalAlpha = 1
+			// Etiqueta: nombre del capitulo (o numero), reduciendo el
+			// cuerpo hasta caber en la pestana
+			let label = (names[i] || "").trim() || String(i + 1)
+			let lfs = Math.max(8, Math.round(th * 0.38))
+			ctx.font = lfs + 'px "Pirata One"'
+			while (lfs > 7 && ctx.measureText(label).width > th - 6) {
+				lfs--
+				ctx.font = lfs + 'px "Pirata One"'
+			}
+			while (ctx.measureText(label).width > th - 6 && label.length > 1) {
+				label = label.slice(0, -1)
+			}
+			ctx.fillStyle = "rgb(216, 214, 192)"
+			ctx.fillText(label, x + th / 2, y + th / 2 + 1)
+			const hov = mouseX >= x && mouseX < x + th && mouseY >= y - 3 && mouseY < y + th
+			if (hov) {
+				cursor("pointer")
+				// Tooltip bajo la pestana: destino + accion del click der
+				const tfs = Math.max(10, Math.round(th * 0.3))
+				ctx.font = tfs + 'px "Pirata One"'
+				ctx.lineWidth = 3
+				ctx.strokeStyle = "rgba(0, 0, 0, 0.9)"
+				ctx.fillStyle = "rgb(255, 255, 230)"
+				const lines = []
+				if (set) {
+					const nom = (names[i] || "").trim()
+					lines.push("Cap " + (i + 1) + (nom ? " - " + nom : "") + " \u2192 pag " + (c + 1) + "-" + Math.min(c + 2, def.pages))
+					lines.push(bookView === "pages" && (c >> 1) === bookSpread ? "Click der: quitar" : "Click der: renombrar")
+				} else {
+					lines.push("Click der: marcar y nombrar")
+				}
+				for (let li = 0; li < lines.length; li++) {
+					const tip = lines[li]
+					const tw = ctx.measureText(tip).width
+					let tx = x + th / 2
+					if (tx + tw / 2 > L.bx + L.bw) {
+						tx = L.bx + L.bw - tw / 2
+					}
+					if (tx - tw / 2 < 4) {
+						tx = 4 + tw / 2
+					}
+					const ty = y + th + Math.round(th * 0.3) + li * (tfs + 4)
+					ctx.strokeText(tip, tx, ty)
+					ctx.fillText(tip, tx, ty)
+				}
+			}
+			bookZones.push({
+				x: x, y: y - 3, w: th, h: th + 3,
+				cb: set ? () => setBookView("pages", c >> 1) : null,
+				rcb: () => rightClickBookChapter(i)
+			})
+			x += th + T.gap
+		}
+		ctx.textAlign = "left"
+		ctx.textBaseline = "alphabetic"
+	}
+
+	// Ajusta el tamano de la letra (A- / A+) y lo guarda en el slot:
+	// sobrevive a guardar/cargar el mundo y a cerrar el libro.  En la
+	// portada gradua el titulo (coverFontSize); en las hojas, el texto
+	// (fontSize).
+	function adjustBookFont(dir, cover) {
+		if (!bookSlot) {
+			return
+		}
+		if (cover) {
+			const auto = Math.max(10, Math.min(17, Math.round(bookLayout().sh * 0.075)))
+			const cur = bookSlot.coverFontSize || auto
+			bookSlot.coverFontSize = Math.max(10, Math.min(28, cur + dir))
+		} else {
+			const auto = Math.max(9, Math.min(15, Math.round(bookLayout().sh * 0.05)))
+			const cur = bookSlot.fontSize || auto
+			bookSlot.fontSize = Math.max(9, Math.min(24, cur + dir))
+		}
+		drawScreens.book()
+	}
+
+	// Pie de navegacion: en vista hojas, las DOS flechas JUNTAS al
+	// centro del sprite (par a par), indicador a continuacion y A- / A+
+	// a la izquierda.  En portada: A- / A+ (tamano del titulo) a la
+	// izquierda y la flecha de ABRIR el libro centrada bajo la tapa.
+	// Flechas del kit con direccion inequivoca: flecha_izquierda = par
+	// previo (y desde el par 1 vuelve a la portada), flecha_derecha =
+	// par siguiente.
+	function drawBookFoot(L) {
+		const def = ITEMS[bookSlot.state]
+		const ah = Math.max(18, Math.min(30, Math.round(L.sh * 0.13)))
+		const y = L.footY + Math.round((L.footH - ah) / 2)
+		const cyF = L.footY + L.footH / 2
+		const prevImg = uiImgs.flecha_izquierda
+		const nextImg = uiImgs.flecha_derecha
+		const pw = imgReady(prevImg) ? Math.round(ah * prevImg.width / prevImg.height) : ah
+		const nw = imgReady(nextImg) ? Math.round(ah * nextImg.width / nextImg.height) : ah
+		ctx.textAlign = "center"
+		ctx.textBaseline = "middle"
+		ctx.lineWidth = 3
+		ctx.strokeStyle = "rgba(0, 0, 0, 0.9)"
+		if (bookView === "cover") {
+			// Portada: A- / A+ (tamano del titulo) a la izquierda y la
+			// flecha de ABRIR el libro centrada bajo la tapa
+			const bfs = Math.max(12, Math.round(ah * 0.55))
+			let cfx = L.sx + 4
+			for (const t of ["A-", "A+"]) {
+				ctx.font = bfs + 'px "Pirata One"'
+				const tw = Math.round(ctx.measureText(t).width) + 10
+				const hov = mouseX >= cfx && mouseX < cfx + tw && mouseY >= L.footY && mouseY < L.footY + L.footH
+				ctx.fillStyle = hov ? "rgb(255, 255, 230)" : "rgb(216, 214, 192)"
+				ctx.strokeText(t, cfx + tw / 2, cyF)
+				ctx.fillText(t, cfx + tw / 2, cyF)
+				if (hov) {
+					cursor("pointer")
+				}
+				bookZones.push({ x: cfx, y: L.footY, w: tw, h: L.footH, cb: () => adjustBookFont(t === "A+" ? 1 : -1, true) })
+				cfx += tw + 8
+			}
+			const x = Math.round(L.sx + L.sw / 2 - nw / 2)
+			const hov = mouseX >= x - 8 && mouseX < x + nw + 8 && mouseY >= y - 8 && mouseY < y + ah + 8
+			if (imgReady(nextImg)) {
+				ctx.drawImage(nextImg, x, y, nw, ah)
+			} else {
+				// Fallback: > en Pirata One
+				ctx.font = Math.round(ah * 0.7) + 'px "Pirata One"'
+				ctx.fillStyle = "rgb(216, 214, 192)"
+				ctx.strokeText(">", x + nw / 2, y + ah / 2)
+				ctx.fillText(">", x + nw / 2, y + ah / 2)
+			}
+			if (hov) {
+				cursor("pointer")
+			}
+			bookZones.push({ x: x - 10, y: y - 10, w: nw + 20, h: ah + 20, cb: () => setBookView("pages") })
+			ctx.textAlign = "left"
+			ctx.textBaseline = "alphabetic"
+			return
+		}
+		// Vista hojas: par [previa][siguiente] JUNTO, centrado en el sprite
+		// (coordenada redondeada: pixel-perfect al escalar el arte)
+		const gap = 10
+		const pairW = pw + gap + nw
+		const px = Math.round(L.sx + L.sw / 2 - pairW / 2)
+		const zones = [
+			{ x: px, y: y, w: pw, h: ah, cb: () => turnBookSpread(-1) },
+			{ x: px + pw + gap, y: y, w: nw, h: ah, cb: () => turnBookSpread(1) }
+		]
+		// Indicador de paginas justo despues del par
+		ctx.font = Math.max(11, Math.round(ah * 0.5)) + 'px "Pirata One"'
+		ctx.fillStyle = "rgb(216, 214, 192)"
+		const label = "Paginas " + (bookSpread * 2 + 1) + "-" + Math.min(bookSpread * 2 + 2, def.pages) + " / " + def.pages
+		const lx = px + pairW + 16 + ctx.measureText(label).width / 2
+		ctx.strokeText(label, lx, cyF)
+		ctx.fillText(label, lx, cyF)
+		// Botones A- / A+ en el borde izquierdo del pie
+		const bfs = Math.max(12, Math.round(ah * 0.55))
+		let fx = L.sx + 4
+		for (const t of ["A-", "A+"]) {
+			ctx.font = bfs + 'px "Pirata One"'
+			const tw = Math.round(ctx.measureText(t).width) + 10
+			const hov = mouseX >= fx && mouseX < fx + tw && mouseY >= L.footY && mouseY < L.footY + L.footH
+			ctx.fillStyle = hov ? "rgb(255, 255, 230)" : "rgb(216, 214, 192)"
+			ctx.strokeText(t, fx + tw / 2, cyF)
+			ctx.fillText(t, fx + tw / 2, cyF)
+			if (hov) {
+				cursor("pointer")
+			}
+			bookZones.push({ x: fx, y: L.footY, w: tw, h: L.footH, cb: () => adjustBookFont(t === "A+" ? 1 : -1) })
+			fx += tw + 8
+		}
+		// Flechas: zonas con margen (son pequenas) y dibujo
+		for (const z of zones) {
+			const zz = { x: z.x - 10, y: z.y - 10, w: z.w + 20, h: z.h + 20, cb: z.cb }
+			if (mouseX >= zz.x && mouseX < zz.x + zz.w && mouseY >= zz.y && mouseY < zz.y + zz.h) {
+				cursor("pointer")
+			}
+			bookZones.push(zz)
+		}
+		if (imgReady(prevImg)) {
+			ctx.drawImage(prevImg, zones[0].x, y, pw, ah)
+		} else {
+			ctx.font = Math.round(ah * 0.7) + 'px "Pirata One"'
+			ctx.fillStyle = "rgb(216, 214, 192)"
+			ctx.strokeText("<", zones[0].x + pw / 2, y + ah / 2)
+			ctx.fillText("<", zones[0].x + pw / 2, y + ah / 2)
+		}
+		if (imgReady(nextImg)) {
+			ctx.drawImage(nextImg, zones[1].x, y, nw, ah)
+		} else {
+			ctx.font = Math.round(ah * 0.7) + 'px "Pirata One"'
+			ctx.fillStyle = "rgb(216, 214, 192)"
+			ctx.strokeText(">", zones[1].x + nw / 2, y + ah / 2)
+			ctx.fillText(">", zones[1].x + nw / 2, y + ah / 2)
+		}
+		ctx.textAlign = "left"
+		ctx.textBaseline = "alphabetic"
+	}
+
+	// Icono X del kit DENTRO de la esquina superior derecha de la hoja:
+	// alineado al borde superior de la pagina (fraccion 0.058 del
+	// sprite) y con un inset del 7.5% del ancho para caer sobre la
+	// esquina (la hoja derecha cede ese rincon).  El kit trae un unico
+	// icono: el hover se marca escalandolo un poco.
+	function drawBookClose(L) {
+		const base = uiImgs.icono_x
+		const s = Math.max(0.8, Math.min(1.3, L.sh / 320))
+		const w = Math.round((imgReady(base) ? base.width : 22) * s)
+		const h = Math.round((imgReady(base) ? base.height : 19) * s)
+		const inset = Math.round(L.sw * 0.075)
+		const x = Math.round(L.sx + L.sw - w - inset)
+		const y = Math.round(L.sy + L.sh * 0.058)
+		const hov = mouseX >= x - 6 && mouseX < x + w + 6 && mouseY >= y - 6 && mouseY < y + h + 6
+		if (imgReady(base)) {
+			const hs = hov ? 1.15 : 1
+			const dw = Math.round(w * hs), dh = Math.round(h * hs)
+			ctx.drawImage(base, Math.round(x - (dw - w) / 2), Math.round(y - (dh - h) / 2), dw, dh)
+		} else {
+			// Fallback: X en Pirata One
+			ctx.textAlign = "center"
+			ctx.textBaseline = "middle"
+			ctx.font = Math.round(h * 0.9) + 'px "Pirata One"'
+			ctx.lineWidth = 3
+			ctx.strokeStyle = "rgba(0, 0, 0, 0.85)"
+			ctx.fillStyle = hov ? "rgb(255, 255, 230)" : "rgb(216, 214, 192)"
+			ctx.strokeText("X", x + w / 2, y + h / 2)
+			ctx.fillText("X", x + w / 2, y + h / 2)
+			ctx.textAlign = "left"
+			ctx.textBaseline = "alphabetic"
+		}
+		if (hov) {
+			cursor("pointer")
+		}
+		bookZones.push({ x: x - 8, y: y - 8, w: w + 16, h: h + 16, cb: closeBook })
+	}
+
+	// Zona de firma en la portada (bajo la etiqueta): boton "Firmar", o
+	// la fecha de firma (+ autor de libros viejos) si ya esta firmado.
+	function drawBookSign(L) {
+		const cx = L.sx + L.sw / 2
+		const cy = Math.round(L.sy + L.sh * 0.68)
+		ctx.textAlign = "center"
+		ctx.textBaseline = "middle"
+		ctx.lineWidth = 3
+		ctx.strokeStyle = "rgba(0, 0, 0, 0.85)"
+		if (bookSlot.signed) {
+			const fs = Math.max(10, Math.round(L.sh * 0.052))
+			ctx.font = fs + 'px "Pirata One"'
+			ctx.fillStyle = "rgb(216, 214, 192)"
+			const label = "Firmado" + (bookSlot.signDate ? " el " + new Date(bookSlot.signDate).toLocaleDateString() : "")
+			ctx.strokeText(label, cx, cy)
+			ctx.fillText(label, cx, cy)
+			if (bookSlot.author) {
+				ctx.strokeText("por " + bookSlot.author, cx, cy + fs * 1.4)
+				ctx.fillText("por " + bookSlot.author, cx, cy + fs * 1.4)
+			}
+		} else {
+			const fs = Math.max(12, Math.round(L.sh * 0.07))
+			ctx.font = fs + 'px "Pirata One"'
+			const zw = fs * 5, zh = fs * 2.4
+			const hov = mouseX >= cx - zw / 2 && mouseX < cx + zw / 2 && mouseY >= cy - zh / 2 && mouseY < cy + zh / 2
+			ctx.fillStyle = hov ? "rgb(255, 255, 230)" : "rgb(216, 214, 192)"
+			ctx.strokeText("Firmar", cx, cy)
+			ctx.fillText("Firmar", cx, cy)
+			if (hov) {
+				cursor("pointer")
+			}
+			bookZones.push({ x: cx - zw / 2, y: cy - zh / 2, w: zw, h: zh, cb: firmarBook })
+		}
+		ctx.textAlign = "left"
+		ctx.textBaseline = "alphabetic"
+	}
+
+	// Coloca los inputs HTML sobre sus zonas (solo los de la vista
+	// activa; el resto queda oculto).  Como trackMouse repinta a cada
+	// mousemove, aplicar estilos solo si algo cambio evita recalculos
+	// de layout del navegador a cada frame.
+	function layoutBookTexts(L) {
+		if (!bookSlot) {
+			return
+		}
+		const zones = []
+		if (bookView === "cover") {
+			// Tamano del titulo: ajustable por libro (A- / A+ de portada)
+			zones.push({ el: bookcover, r: COVER_RECT, fs: bookSlot.coverFontSize || Math.max(10, Math.min(17, Math.round(L.sh * 0.075))) })
+		} else {
+			// Tamano de letra: ajustable por libro (A- / A+); sin ajuste,
+			// el automatico segun el tamano del widget.
+			const fs = bookSlot.fontSize || Math.max(9, Math.min(15, Math.round(L.sh * 0.05)))
+			zones.push({ el: bookpageL, r: PAGE_L_RECT, fs: fs })
+			zones.push({ el: bookpageR, r: PAGE_R_RECT, fs: fs })
+		}
+		for (const z of zones) {
+			const x = Math.round(L.sx + L.sw * z.r.x)
+			const y = Math.round(L.sy + L.sh * z.r.y)
+			const w = Math.round(L.sw * z.r.w)
+			const h = Math.round(L.sh * z.r.h)
+			const key = bookView + "|" + x + "," + y + "," + w + "," + h + "," + z.fs
+			z.el.classList.remove("hidden")
+			if (z.el._geomKey === key) {
+				continue
+			}
+			z.el._geomKey = key
+			z.el.style.left = x + "px"
+			z.el.style.top = y + "px"
+			z.el.style.width = w + "px"
+			z.el.style.height = h + "px"
+			z.el.style.fontSize = z.fs + "px"
+		}
+		for (const el of bookInputs) {
+			if (!zones.some(z => z.el === el)) {
+				el.classList.add("hidden")
+			}
+		}
+	}
+
+	// El texto vive en el slot ({ state, count, text: [...], signed }):
+	// save() serializa main/hotbar enteros y restore usa slice(), asi que
+	// viaja a IndexedDB tal cual.
+	function bookPages(slot) {
+		const def = ITEMS[slot.state]
+		if (!slot.text) {
+			slot.text = []
+		}
+		while (slot.text.length < def.pages) {
+			slot.text.push("")
+		}
+		return slot.text
+	}
+	// Flush de las tres zonas al slot: la portada escribe .title y las
+	// hojas del par visible van a .text[i].
+	function flushBookAll() {
+		if (!bookSlot) {
+			return
+		}
+		bookSlot.title = (bookcover.value || "").slice(0, 32)
+		const texts = bookPages(bookSlot)
+		const i0 = bookSpread * 2
+		texts[i0] = (bookpageL.value || "").slice(0, 256)
+		if (i0 + 1 < texts.length) {
+			texts[i0 + 1] = (bookpageR.value || "").slice(0, 256)
+		}
+	}
+	// Sincroniza los inputs con el slot (valores + readonly de firma +
+	// placeholders).  Corre al abrir, al cambiar vista/par y al firmar.
+	function syncBookInputs() {
+		if (!bookSlot) {
+			return
+		}
+		const ro = !!bookSlot.signed
+		bookcover.value = bookSlot.title || ""
+		bookcover.readOnly = ro
+		bookcover.placeholder = ro ? "" : "Titulo..."
+		const texts = bookPages(bookSlot)
+		const i0 = bookSpread * 2
+		bookpageL.value = texts[i0] || ""
+		bookpageR.value = i0 + 1 < texts.length ? (texts[i0 + 1] || "") : ""
+		bookpageL.readOnly = ro
+		bookpageR.readOnly = ro
+		bookpageL.placeholder = ro ? "" : "Escribe aqui..."
+		bookpageR.placeholder = ro ? "" : "Escribe aqui..."
+	}
+	function openBook() {
+		const slot = inventory.hotbar[inventory.hotbarSlot]
+		if (!slot || !ITEMS[slot.state] || !ITEMS[slot.state].book) {
+			return
+		}
+		bookSlot = slot
+		bookView = "cover"
+		bookSpread = 0
+		releasePointer()
+		// onenter (html.book) sincroniza los inputs y enfoca la portada;
+		// el puntero suelto queda libre para pestañas/flechas/X.
+		changeScene("book")
+	}
+	function closeBook() {
+		if (screen !== "book") {
+			return
+		}
+		// html.book.onexit hace flush del texto y esconde todo.
+		play()
+	}
+	// Cambia de vista (y opcionalmente de par de hojas) con flush de lo
+	// escrito y foco directo en la zona de escritura de la vista nueva.
+	function setBookView(v, spread) {
+		if (!bookSlot || screen !== "book") {
+			return
+		}
+		const pairs = Math.max(1, Math.ceil(ITEMS[bookSlot.state].pages / 2))
+		const ns = spread === undefined ? bookSpread : Math.max(0, Math.min(spread, pairs - 1))
+		if (v === bookView && ns === bookSpread) {
+			return
+		}
+		flushBookAll()
+		bookView = v
+		bookSpread = ns
+		syncBookInputs()
+		drawScreens.book()
+		if (v === "cover") {
+			bookcover.focus()
+		} else {
+			bookpageL.focus()
+		}
+	}
+	function turnBookSpread(dir) {
+		if (!bookSlot) {
+			return
+		}
+		const pairs = Math.max(1, Math.ceil(ITEMS[bookSlot.state].pages / 2))
+		if (pairs < 2) {
+			return
+		}
+		// Volver desde el primer par: se cierra el libro y se ve la
+		// portada (como cerrar la tapa de un libro de verdad).
+		if (dir < 0 && bookSpread === 0) {
+			setBookView("cover")
+			return
+		}
+		setBookView("pages", (bookSpread + dir + pairs) % pairs)
+	}
+	// Firma estilo Minecraft: una vez firmado, el texto queda bloqueado.
+	// El titulo es lo escrito en la portada (ya flushado); la fecha se
+	// estampa bajo la etiqueta.  Los libros viejos con .author lo
+	// siguen mostrando.
+	function firmarBook() {
+		if (!bookSlot || bookSlot.signed) {
+			return
+		}
+		flushBookAll()
+		bookSlot.signed = true
+		bookSlot.signDate = Date.now()
+		syncBookInputs()
+		bookcover.focus()
+		drawScreens.book()
+	}
+	// Zonas clicables de la escena: las reconstruye drawBook y el
+	// mousedown del canvas las consulta cuando screen === "book".
+	// Boton izquierdo = cb (saltar/firmar/cerrar...), boton derecho =
+	// rcb (marcar/nombrar capitulo).  canvas.oncontextmenu ya esta
+	// prevenido.  Devuelve true si el click dejo el input de nombre
+	// ABIERTO (el mousedown debe entonces prevenir su default: enfocar
+	// el canvas blurearia el input y lo cerraria al instante).
+	function clickBookZone(e) {
+		for (const z of bookZones) {
+			if (mouseX >= z.x && mouseX < z.x + z.w && mouseY >= z.y && mouseY < z.y + z.h) {
+				if (e && e.button === 2) {
+					if (typeof z.rcb === "function") {
+						z.rcb()
+					}
+				} else if (typeof z.cb === "function") {
+					z.cb()
+				}
+				return bookChapterEdit >= 0
+			}
+		}
+		return false
+	}
+
+	// Escritura en vivo: cada tecla ya flusha al slot (input event) y el
+	// click derecho no abre el menu del navegador dentro del libro.
+	// Escape cierra desde cualquier zona; Enter en la portada pasa a las
+	// hojas (flujo natural de escritura).  El canvas nunca recibe estas
+	// teclas mientras un input tiene el foco.
+	for (const el of bookInputs) {
+		if (!el) {
+			continue
+		}
+		el.addEventListener("input", flushBookAll)
+		el.addEventListener("contextmenu", function(e) {
+			e.preventDefault()
+		})
+		el.addEventListener("keydown", function(e) {
+			if (e.key === "Escape") {
+				e.preventDefault()
+				closeBook()
+			}
+		})
+	}
+	if (bookcover) {
+		bookcover.addEventListener("keydown", function(e) {
+			if (e.key === "Enter") {
+				e.preventDefault()
+				setBookView("pages")
+			}
+		})
+	}
+	// Mini-input de nombre de capitulo: Enter guarda, Escape cancela y
+	// perder el foco guarda.  El canvas nunca recibe estas teclas
+	// mientras el input las tiene.
+	if (bookchapter) {
+		bookchapter.addEventListener("keydown", function(e) {
+			if (e.key === "Enter") {
+				e.preventDefault()
+				closeBookChapterName(true)
+			} else if (e.key === "Escape") {
+				e.preventDefault()
+				closeBookChapterName(false)
+			}
+		})
+		bookchapter.addEventListener("blur", function() {
+			closeBookChapterName(true)
+		})
+		bookchapter.addEventListener("contextmenu", function(e) {
+			e.preventDefault()
+		})
+	}
+
 	function clickInv() {
 		let L = invLayout()
 		let s = L.s
@@ -7777,8 +9127,11 @@ function MineKhan() {
 			if (showInv) {
 				slotInteract(inventory.main, index)
 			} else if (page * L.perPage + index < list.length) {
-				// Creative catalog: grab an infinite copy of this block
-				inventory.holding = { state: list[page * L.perPage + index], count: 64 }
+				// Creative catalog: grab an infinite copy of this block.
+				// Libros/Notas salen con count 1 (texto propio, no apilan).
+				const grabId = list[page * L.perPage + index]
+				const grabBook = ITEMS[grabId] && ITEMS[grabId].book
+				inventory.holding = { state: grabId, count: grabBook ? 1 : 64 }
 			}
 			drawScreens.inventory()
 			return
@@ -7931,10 +9284,13 @@ function MineKhan() {
 				}
 			holding = slotState(inventory.hotbar[inventory.hotbarSlot])
 			if (isItemId(holding)) {
-				// Item en mano: se come si es comida; NUNCA se coloca en
-				// el mundo (un id de item corromperia el bloque).
+				// Item en mano: se come si es comida y se abre si es libro/
+				// nota (click derecho); NUNCA se coloca en el mundo (un id
+				// de item corromperia el bloque).
 				if (e.button === 2 && ITEMS[holding].food) {
 					eatHeld(ITEMS[holding])
+				} else if (e.button === 2 && ITEMS[holding].book) {
+					openBook()
 				}
 			} else if(e.button === 2 && holding) {
 				place = true
@@ -7945,6 +9301,15 @@ function MineKhan() {
 			}
 		} else if (screen === "inventory") {
 			clickInv()
+		} else if (screen === "book") {
+			// Pestañas/flechas/X/Firmar/A-/A+: zonas custom dibujadas por
+			// drawBook (la escena no usa Buttons).  El boton derecho marca
+			// y nombra capitulos; si dejo el input abierto, prevenir el
+			// default del mousedown (foco al canvas) para no cerrarlo.
+			const abrioNombre = clickBookZone(e)
+			if (abrioNombre) {
+				e.preventDefault()
+			}
 		}
 
 		Button.click()
@@ -8078,6 +9443,19 @@ function MineKhan() {
 			if (k === "enter") {
 				drawScreens.inventory()
 			}
+		} else if (screen === "book") {
+			// Con un input enfocado las teclas van al input (elemento
+			// aparte): aqui solo llegan con el foco en el canvas.
+			// Escape/E cierran, flechas giran el par de hojas.
+			if (k === "escape" || k === "e") {
+				closeBook()
+			}
+			if (k === "arrowleft") {
+				turnBookSpread(-1)
+			}
+			if (k === "arrowright") {
+				turnBookSpread(1)
+			}
 		}
 	}
 	canvas.onkeyup = function(e) {
@@ -8140,6 +9518,10 @@ function MineKhan() {
 		height = window.innerHeight
 		canvas.height = height
 		canvas.width = width
+		// Reasignar el tamano RESETEA el estado del contexto: sin esto,
+		// imageSmoothingEnabled vuelve a true tras cualquier resize y
+		// los sprites escalados sangran los RGB de sus transparentes.
+		ctx.imageSmoothingEnabled = false
 		gl.canvas.height = height
 		gl.canvas.width = width
 		gl.viewport(0, 0, width, height)
@@ -8696,6 +10078,7 @@ function MineKhan() {
 		}
 
 		drawScreens.inventory = drawInv
+		drawScreens.book = drawBook
 
 		drawScreens.pause = () => {
 			strokeWeight(1)
@@ -8755,10 +10138,10 @@ function MineKhan() {
 			releasePointer()
 		}
 
-		// El inventario corre a cada frame para que el mundo y las
-		// entidades no se congelen con la E (la pausa no entra aqui:
+		// El inventario y el libro corren a cada frame para que el mundo y
+		// las entidades no se congelen con la E (la pausa no entra aqui:
 		// sigue pausando el juego).
-		if (screen === "play" || screen === "loading" || screen === "inventory") {
+		if (screen === "play" || screen === "loading" || screen === "inventory" || screen === "book") {
 			drawScreens[screen]()
 		}
 

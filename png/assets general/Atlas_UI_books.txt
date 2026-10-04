@@ -1,0 +1,173 @@
+Esta hoja de *spritesheet* (titulada en las etiquetas integradas) tiene unas dimensiones de **960 × 540 píxeles** (Origen `[X: 0, Y: 0]` en la esquina superior izquierda).
+
+A continuación tienes el inventario detallado de assets y las coordenadas estimadas para recortar o mapear cada elemento en tu motor de juego, junto con un porcentaje de certeza de la medición.
+
+---
+
+### 1. Inventario Desglosado por Categorías
+
+* **book (Libros de tapa dura):**
+* Vista abierta de libro (páginas en blanco/líneas cuadradas).
+
+
+* Portadas/lomos de libros cerrados en 6 variantes de color (marrón, café, amarillo, verde, azul claro, azul oscuro) con cortes para el lomo.
+
+
+
+
+* **notebook (Cuadernos de argollas):**
+* Vista abierta con espiral/argollas centrales (páginas rayadas y lisas).
+
+
+* Portadas/lomos de cuadernos en 6 colores (marrón, café, amarillo, verde, azul claro, azul oscuro).
+
+
+
+
+* **letter & paper tiles (Cartas y Hojas de Papel):**
+* Sobres y cartas plegadas (`letter`).
+
+
+* Hojas sueltas con bordes rasgados, quemados, con espirales, renglones y marcos rectangulares.
+
+
+* Marcos cuadrados ornamentados (azul, beige, marco doble).
+
+
+
+
+* **stains & postage stamps (Detalles decorativos):**
+* Manchas de café/tinta/suciedad (`stains`).
+
+
+* Sellos postales y estandartes/marcas de cera (`postage stamps`).
+
+
+
+
+* **ribbons (Cintas y Marcadores de página):**
+* `ribbons for books and notebooks`: Pestañas y marcadores de libros en tonos beige y marrón.
+
+
+* `other ribbons`: Cintas ornamentales e insignias en rojo, azul, verde, amarillo y beige.
+
+
+
+
+* **icons (Matriz de Micro-Iconos UI):**
+* Minilibros y cuadernos en todos los colores.
+
+
+* Iconos de monedas, lingotes, gemas, bocadillos de texto, cartas, marcadores, corazones, estrellas y botones de confirmación/cancelación (`✓`, `✕`, flechas de giro).
+
+
+
+
+* **cursors 3D & 2D (Punteros de Ratón):**
+* Sets completos de cursores en versión 3D (con sombreado) y 2D (planos): flechas, mano, lupas, texto, selección, redimensionamiento, etc.
+
+
+
+
+
+---
+
+### 2. Coordenadas de Recorte y Porcentaje de Certeza
+
+> **Porcentaje General de Certeza:** **90%**
+> *(Los bloques principales con etiquetas tienen un margen de $\pm 3$ a $8$ píxeles según la transparencia del margen de corte)*.
+> 
+> 
+
+#### Bloque Superior Izquierdo: Libros y Cuadernos
+
+* **`book` (Libros de tapa dura):**
+* *Porcentaje de certeza:* **92%**
+* **Libro abierto:** `X: 16` a `X: 168`, `Y: 32` a `Y: 126`
+
+* **Portadas de libros (6 colores + lomos):** `X: 185` a `X: 400`, `Y: 32` a `Y: 228`
+
+
+
+* **`notebook` (Cuadernos de argollas):**
+* *Porcentaje de certeza:* **92%**
+* **Cuaderno abierto:** `X: 16` a `X: 168`, `Y: 260` a `Y: 460`
+
+* **Portadas de cuadernos (6 colores + lomos):** `X: 185` a `X: 400`, `Y: 260` a `Y: 460`
+
+
+
+
+#### Bloque Superior Central: Cartas, Papeles y Detalles
+
+* **`letter` (Sobres y Carta):**
+* *Porcentaje de certeza:* **90%**
+* `X: 405` a `X: 520`, `Y: 32` a `Y: 200`
+
+
+
+* **`stains` (Manchas de tinta/café):**
+* *Porcentaje de certeza:* **85%**
+* `X: 410` a `X: 525`, `Y: 260` a `Y: 335`
+
+
+
+* **`postage stamps` (Sellos y Marcas de cera):**
+* *Porcentaje de certeza:* **88%**
+* `X: 420` a `X: 520`, `Y: 370` a `Y: 495`
+
+
+
+
+#### Bloque Superior Derecho: Papeles y Cuadros
+
+* **`Paper tiles` (Hojas y Marcos decorativos):**
+* *Porcentaje de certeza:* **90%**
+* **Cuadrícula de hojas de papel (8 variaciones):** `X: 535` a `X: 810`, `Y: 32` a `Y: 295`
+
+* **Marcos decorativos cuadrados (Esquina superior derecha):** `X: 830` a `X: 950`, `Y: 32` a `Y: 235`
+
+
+
+
+#### Bloque Inferior Izquierdo: Cintas y Marcadores
+
+* **`ribbons for books and notebooks` (Cintas sencillas beige/marrón):**
+* *Porcentaje de certeza:* **88%**
+* `X: 10` a `X: 175`, `Y: 500` a `Y: 940` *(o `Y: 500` a `Y: 530` en el visor según escala)* / Sección de cintas beige y marrones.
+
+
+
+
+* **`other ribbons` (Cintas multicolores e insignias):**
+* *Porcentaje de certeza:* **88%**
+* `X: 185` a `X: 485`, `Y: 500` en adelante (sección inferior de listones).
+
+
+
+
+
+#### Bloque Medio/Inferior Derecho: Iconos y Cursores
+
+* **`icons` (Matriz completa de iconos):**
+* *Porcentaje de certeza:* **93%**
+* **Área total de iconos:** `X: 535` a `X: 950`, `Y: 320` a `Y: 490`
+
+* *Mini-libros y cuadernos:* `X: 535` a `X: 645`, `Y: 340` a `Y: 490`
+
+* *Monedas, cartas, marcadores, cajas:* `X: 650` a `X: 810`, `Y: 340` a `Y: 490`
+
+* *Estrellas y botones (`✓`, `✕`, flechas):* `X: 815` a `X: 950`, `Y: 340` a `Y: 490`
+
+
+
+* **`cursors 3D`:**
+* *Porcentaje de certeza:* **88%**
+* `X: 500` a `X: 760`, `Y: 600` a `Y: 720` (o banda superior del set de punteros 3D).
+
+
+
+
+* **`cursors 2D`:**
+* *Porcentaje de certeza:* **88%**
+* `X: 500` a `X: 760`, `Y: 730` en adelante (banda inferior del set de punteros 2D).

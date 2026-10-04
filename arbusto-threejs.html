@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Arbusto procedural estilo Minecraft — Three.js</title>
+<!--
+	Arbusto de hojas 100% procedural (sin imagenes ni assets externos):
+	textura Canvas 16x16 + cubo/cruz/techo fusionados + InstancedMesh.
+	Unica dependencia: Three.js desde CDN (necesita internet).
+	Abrir directamente con doble clic o con un servidor local.
+-->
+<style>
+	html, body { margin: 0; height: 100%; overflow: hidden; background: #87c5eb; }
+	#info {
+		position: fixed; left: 12px; top: 12px; color: #fff;
+		font: 13px/1.5 monospace; text-shadow: 0 1px 2px rgba(0,0,0,.55);
+		user-select: none; pointer-events: none; white-space: pre-line;
+	}
+</style>
+</head>
+<body>
+<div id="info">Arbusto procedural (100 instancias)
+arrastrar: orbitar · rueda: zoom · clic derecho: desplazar</div>
+
+<script type="importmap">
+{
+	"imports": {
+		"three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+		"three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+	}
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three'
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
+import * as BufferGeometryUtils from 'three/addons/utils/BufferGeometryUtils.js'
+
+/* ---------- 1. Textura procedural de follaje (Canvas 2D, 16x16) -------- */
+function crearTexturaHojas() {
+	const S = 16
+	const canvas = document.createElement('canvas')
+	canvas.width = canvas.height = S
+	const ctx = canvas.getContext('2d')
+
+	// 4 tonos de verde estilo Minecraft (oscuro -> claro), ponderados
+	const paleta = ['#1b4d1b', '#2e7d32', '#43a047', '#66bb6a']
+	const pesos  = [0.35, 0.35, 0.20, 0.10]
+
+	for (let y = 0; y < S; y++) {
+		for (let x = 0; x < S; x++) {
+			if (Math.random() < 0.25) continue // ~25% calado: pixel transparente
+			let r = Math.random(), i = 0, acc = 0
+			for (; i < pesos.length - 1; i++) {
+				acc += pesos[i]
+				if (r < acc) break
+			}
+			ctx.fillStyle = paleta[i]
+			ctx.fillRect(x, y, 1, 1)
+		}
+	}
+
+	const tex = new THREE.CanvasTexture(canvas)
+	tex.magFilter = THREE.NearestFilter // pixel art: bordes nitidos
+	tex.minFilter = THREE.NearestFilter
+	tex.generateMipmaps = false
+	tex.colorSpace = THREE.SRGBColorSpace
+	return tex
+}
+
+/* ---------- 2. Geometria combinada: efecto "Better Leaves" -------------- */
+function crearGeometriaArbusto() {
+	const piezas = []
+
+	// a) cubo base 1x1x1
+	piezas.push(new THREE.BoxGeometry(1, 1, 1))
+
+	// b) dos planos diagonales 1.2x1.2 cruzados en X (+45 y -45 grados)
+	const cruzA = new THREE.PlaneGeometry(1.2, 1.2)
+	cruzA.rotateY(Math.PI / 4)
+	piezas.push(cruzA)
+
+	const cruzB = new THREE.PlaneGeometry(1.2, 1.2)
+	cruzB.rotateY(-Math.PI / 4)
+	piezas.push(cruzB)
+
+	// c) plano horizontal superior 1.1x1.1, ligeramente elevado
+	const techo = new THREE.PlaneGeometry(1.1, 1.1)
+	techo.rotateX(-Math.PI / 2)
+	techo.translate(0, 0.53, 0)
+	piezas.push(techo)
+
+	return BufferGeometryUtils.mergeGeometries(piezas)
+}
+
+/* ---------- 3. Material cutout (recorte sin fallos de profundidad) ------ */
+const material = new THREE.MeshStandardMaterial({
+	map: crearTexturaHojas(),
+	transparent: true,
+	alphaTest: 0.5,          // descarta los pixeles calados con corte duro
+	side: THREE.DoubleSide,  // los planos se ven por ambas caras
+	roughness: 1,
+	metalness: 0,
+})
+
+/* ---------- 5. Escena base ---------------------------------------------- */
+const escena = new THREE.Scene()
+escena.background = new THREE.Color(0x87c5eb)
+escena.fog = new THREE.Fog(0x87c5eb, 30, 70)
+
+const camara = new THREE.PerspectiveCamera(50, innerWidth / innerHeight, 0.1, 200)
+camara.position.set(10, 8, 13)
+
+const renderer = new THREE.WebGLRenderer({ antialias: true })
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2))
+renderer.setSize(innerWidth, innerHeight)
+renderer.shadowMap.enabled = true
+renderer.shadowMap.type = THREE.PCFSoftShadowMap
+document.body.appendChild(renderer.domElement)
+
+const controles = new OrbitControls(camara, renderer.domElement)
+controles.enableDamping = true
+controles.dampingFactor = 0.08
+controles.target.set(0, 0.6, 0)
+controles.minDistance = 2
+controles.maxDistance = 70
+controles.maxPolarAngle = Math.PI * 0.495 // no bajar del suelo
+
+escena.add(new THREE.AmbientLight(0xbfd8ff, 0.7))
+const sol = new THREE.DirectionalLight(0xfff4e0, 1.8)
+sol.position.set(10, 18, 8)
+sol.castShadow = true
+sol.shadow.mapSize.set(2048, 2048)
+sol.shadow.camera.left = -14
+sol.shadow.camera.right = 14
+sol.shadow.camera.top = 14
+sol.shadow.camera.bottom = -14
+sol.shadow.normalBias = 0.02
+escena.add(sol)
+
+const suelo = new THREE.Mesh(
+	new THREE.PlaneGeometry(80, 80),
+	new THREE.MeshStandardMaterial({ color: 0x5b715a, roughness: 1 })
+)
+suelo.rotation.x = -Math.PI / 2
+suelo.receiveShadow = true
+escena.add(suelo)
+
+/* ---------- 4. Campo de 100 arbustos con InstancedMesh ----------------- */
+const N = 100, LADO = 10, SEP = 1.3
+const arbustos = new THREE.InstancedMesh(crearGeometriaArbusto(), material, N)
+const dummy = new THREE.Object3D()
+const giros = [0, Math.PI / 2, Math.PI, -Math.PI / 2] // 0/90/180/270 grados
+
+let i = 0
+for (let gx = 0; gx < LADO; gx++) {
+	for (let gz = 0; gz < LADO; gz++, i++) {
+		dummy.position.set(
+			(gx - (LADO - 1) / 2) * SEP, 0.5,
+			(gz - (LADO - 1) / 2) * SEP
+		)
+		dummy.rotation.y = giros[Math.floor(Math.random() * 4)]
+		dummy.updateMatrix()
+		arbustos.setMatrixAt(i, dummy.matrix)
+	}
+}
+arbustos.instanceMatrix.needsUpdate = true
+arbustos.castShadow = true
+arbustos.receiveShadow = true
+escena.add(arbustos)
+
+/* ---------- bucle de render y resize ------------------------------------- */
+window.addEventListener('resize', () => {
+	camara.aspect = innerWidth / innerHeight
+	camara.updateProjectionMatrix()
+	renderer.setSize(innerWidth, innerHeight)
+})
+
+renderer.setAnimationLoop(() => {
+	controles.update()
+	renderer.render(escena, camara)
+})
+</script>
+</body>
+</html>

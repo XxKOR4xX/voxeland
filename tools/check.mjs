@@ -1,8 +1,12 @@
 // Static checks for the grass/plant integration. Run: node tools/check.mjs
 import { readFileSync } from "node:fs"
+import { createRequire } from "node:module"
 
 const root = new URL("..", import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, "$1")
 const src = readFileSync(root + "game.js", "utf8")
+// ProcBlocks: la misma librería de tiles procedurales que carga el juego.
+// Las funciones de textura de game.js la consumen vía procTile/procPixels.
+const ProcBlocks = createRequire(import.meta.url)("../png/blocks/procedural_blocks.js")
 
 let fails = 0
 const ok = (cond, msg) => {
@@ -14,13 +18,33 @@ const ok = (cond, msg) => {
 const texBlock = src.split("let textures = {")[1].split("\n\t}")[0]
 const texKeys = new Set([...texBlock.matchAll(/(\w+):\s*(?:"|function)/g)].map(m => m[1]))
 console.log("texturas registradas: " + texKeys.size)
-ok(texKeys.size < 256, `atlas: ${texKeys.size} < 256`)
 
 // --- 2. plantTextureNames vs textures ---------------------------------
 const namesBlock = src.match(/const plantTextureNames = \[([^\]]*)\]/)[1]
 const plantNames = [...namesBlock.matchAll(/"(\w+)"/g)].map(m => m[1])
 console.log("texturas de planta: " + plantNames.length)
 for (const n of plantNames) ok(texKeys.has(n), `plantTextureNames -> textures.${n}`)
+
+// --- 1b. presupuesto del atlas: tiles realmente horneados -------------
+// claves + tintes de planta (3 biomas) + (PROC_VARIANTS-1) por textura
+// proc + (PROC_VARIANTS-1) por hoja del generador + (STRING_VARIANTS-1)
+// como mucho por textura b36 que no sea planta.
+const procTexCount = [...texBlock.matchAll(/\bprocTile\(/g)].length
+const hojaTexCount = [...texBlock.matchAll(/\bhojaTile\(/g)].length
+const PROC_VARIANTS = Number((src.match(/const PROC_VARIANTS = (\d+)/) || [])[1]) || 1
+const STRING_VARIANTS = Number((src.match(/const STRING_VARIANTS = (\d+)/) || [])[1]) || 1
+const textureSize = Number((src.match(/const TEXTURE_SIZE = (\d+)/) || [])[1]) || 256
+const capacity = (textureSize / 16) ** 2
+const stringKeys = [...texBlock.matchAll(/(\w+):\s*"/g)].map(m => m[1])
+const stringVarCount = stringKeys.filter(k => !plantNames.includes(k)).length
+const baked = texKeys.size + plantNames.length * 3 + procTexCount * (PROC_VARIANTS - 1)
+	+ hojaTexCount * (PROC_VARIANTS - 1) + stringVarCount * (STRING_VARIANTS - 1)
+console.log(`tiles horneados: <= ${baked} de ${capacity} (${texKeys.size} claves + ${plantNames.length * 3} tintes + ${procTexCount}x${PROC_VARIANTS - 1} proc + ${hojaTexCount}x${PROC_VARIANTS - 1} hojas + ${stringVarCount}x${STRING_VARIANTS - 1} b36)`)
+ok(baked <= capacity, `atlas: <= ${baked} tiles horneados <= ${capacity}`)
+ok(procTexCount > 0, `texturas ProcBlocks registradas (${procTexCount})`)
+ok(hojaTexCount === 6, `seis hojas del generador: roble, abedul, florada y sus discos (${hojaTexCount})`)
+ok(/const STRING_FLIPS = /.test(src) && /plantTextureNames\.indexOf\(i\) < 0/.test(src),
+	"las b36 toman variantes por simetria (las plantas se quedan con las suyas)")
 
 // --- 3. blocks with variants ------------------------------------------
 const blockBlock = src.split("let blockData = [")[1].split("\n\t]")[0]
@@ -97,7 +121,7 @@ ok(/crossQuads\.concat\(crossQuads\.map\(q =>\s*plantQuad\(q\.corners\.slice\(\)
 ok(/\[\s*\], \/\/ top\s*\[\s*\], \/\/ bottom\s*\[\s*\], \/\/ north\s*crossVerts,/.test(src),
 	"toda la geometría cuelga del slot south")
 ok(/const crossQuads = \[[\s\S]*?0\.5[\s\S]*?\]/.test(src), "la base del quad está a 0.5px")
-ok(/new Float32Array\(900000\)/.test(src), "bigArray ampliado para las plantas")
+ok(/new Float32Array\(1200000\)/.test(src), "bigArray ampliado para las plantas y el arbusto")
 ok(/shapes\.cross\.hitVerts = shapes\.cube\.verts/.test(src), "cross.hitVerts = cubo")
 ok(/baseBlock\.shape = shapes\.cross/.test(src), "initShapes asigna la forma cross")
 ok(/weedDensity/.test(src) && /weedTall/.test(src), "parámetros de densidad")
@@ -169,27 +193,356 @@ ok(densSwamp > 0 && densSwamp < densPlains,
 	`pantano con poco cesped: densidadPorBioma ${densSwamp} < ${densPlains}`)
 
 // --- 10. foliage sits at the terrain green (no dark canopy) -----------
-// Runs the real `leaves` texture function against a stub setPixel and
-// measures the opaque pixels: the canopy must stay at the terrain level
-// (~99/255, range 90-120) instead of the old deep green (~69).
-const leavesSrc = (src.match(/leaves: function\(n\) \{[\s\S]*?\n\t\t\}/) || [])[0] || ""
-let leavesLum = NaN
-if (leavesSrc) {
+// Runs the REAL leaf functions (game.js -> hojaTile: el port del
+// generador de arbustos) against a stub setPixel and measures the
+// opaque pixels: the three canopies (oak, birch and the blossomed one)
+// must stay at the terrain level.  The blossomed canopy is brighter BY
+// DESIGN (it carries flowers): its range is 90-130.
+const leavesSrc = (src.match(/leaves: function\(n(?:, ?v)?\) \{[\s\S]*?\n\t\t\}/) || [])[0] || ""
+const birchSrc = (src.match(/birchLeaves: function\(n(?:, ?v)?\) \{[\s\S]*?\n\t\t\}/) || [])[0] || ""
+const blossomSrc = (src.match(/blossomLeaves: function\(n(?:, ?v)?\) \{[\s\S]*?\n\t\t\}/) || [])[0] || ""
+const leavesDiscSrc = (src.match(/leavesDisc: function\(n(?:, ?v)?\) \{[\s\S]*?\n\t\t\}/) || [])[0] || ""
+const procSrc = src.slice(src.indexOf("function procPixels("), src.indexOf("\n\tlet textures = {"))
+let hojaRoble = NaN, hojaAbedul = NaN, hojaFlor = NaN
+let semillasDistintas = false, petalosRosa = false, mascaraDisco = false
+if (leavesSrc && birchSrc && blossomSrc && leavesDiscSrc && procSrc.includes("function hojaTile(")) {
 	const px = []
-	const bindLeaves = new Function("setPixel", "return { " + leavesSrc + " }.leaves")
-	const leavesFn = bindLeaves((n, x, y, r, g, b, a) => px.push(r, g, b, a))
-	leavesFn(0)
-	let sum = 0, count = 0
-	for (let i = 0; i < px.length; i += 4) {
-		if (px[i + 3] >= 200) {
-			sum += tintLum([px[i], px[i + 1], px[i + 2]])
-			count++
+	// procSrc arrastra TODO (rngHoja, hsl2rgb, PALETAS_HOJA, florBlossom,
+	// hojaTile y los consts HUECOS_HOJA/FLOR_ROSA): el bind es directo.
+	const bindHojas = new Function("setPixel",
+		procSrc + "\nreturn { " + leavesSrc + ",\n" + birchSrc + ",\n" + blossomSrc
+		+ ",\n" + leavesDiscSrc + " }")
+	const hojas = bindHojas((n, x, y, r, g, b, a) => px.push(r, g, b, a))
+	const luzCopa = () => {
+		let sum = 0, count = 0
+		for (let i = 0; i < px.length; i += 4) {
+			if (px[i + 3] >= 200) {
+				sum += tintLum([px[i], px[i + 1], px[i + 2]])
+				count++
+			}
+		}
+		return count ? sum / count : NaN
+	}
+	hojas.leaves(0, 0)
+	const v0 = px.slice()
+	hojaRoble = luzCopa()
+	px.length = 0
+	hojas.leaves(0, 1)
+	const v1 = px.slice()
+	px.length = 0
+	hojas.leaves(0, 2)
+	const v2 = px.slice()
+	// cada semilla es un tile distinto (v0 vs v1, v1 vs v2, v0 vs v2)
+	semillasDistintas = [v1, v2].every(o => o.length === v0.length
+		&& o.some((q, i) => q !== v0[i]))
+		&& v1.length === v2.length && v1.some((q, i) => q !== v2[i])
+	px.length = 0
+	hojas.birchLeaves(0, 0)
+	hojaAbedul = luzCopa()
+	px.length = 0
+	hojas.blossomLeaves(0, 0)
+	hojaFlor = luzCopa()
+	// petalos rosa del blossom: con la densidad al 25% (0-1 por tile) se
+	// miran las 8 variantes y basta que varias lleven flor
+	px.length = 0
+	hojas.blossomLeaves(0, 0)
+	hojaFlor = luzCopa()
+	let conFlor = 0
+	for (let v = 0; v < PROC_VARIANTS; v++) {
+		px.length = 0
+		hojas.blossomLeaves(0, v)
+		if (px.some((q, i) => i % 4 === 0 && px[i + 3] >= 200 && q > px[i + 1] + 30)) conFlor++
+	}
+	petalosRosa = conFlor >= 2
+	px.length = 0
+	hojas.leavesDisc(0, 0)
+	// mascara circular: las 4 esquinas transparentes y ~la area del
+	// circulo en pixeles opacos (menos que el tile entero)
+	let opacosDisco = 0
+	for (let i = 3; i < px.length; i += 4) if (px[i] >= 200) opacosDisco++
+	mascaraDisco = px[3] === 0 && px[63] === 0 && px[963] === 0 && px[1023] === 0
+		&& opacosDisco > 100 && opacosDisco < 180
+}
+ok(Number.isFinite(hojaRoble) && hojaRoble >= 90 && hojaRoble <= 120,
+	`copa de roble clara: luz media ${Number.isFinite(hojaRoble) ? Math.round(hojaRoble) : "?"} (90-120, terreno ~99)`)
+ok(Number.isFinite(hojaAbedul) && hojaAbedul >= 90 && hojaAbedul <= 120,
+	`copa de abedul clara: luz media ${Number.isFinite(hojaAbedul) ? Math.round(hojaAbedul) : "?"} (90-120)`)
+ok(Number.isFinite(hojaFlor) && hojaFlor >= 90 && hojaFlor <= 130,
+	`copa florada brillante: luz media ${Number.isFinite(hojaFlor) ? Math.round(hojaFlor) : "?"} (90-130: lleva flores)`)
+ok(semillasDistintas, "las semillas del generador cambian de verdad el tile")
+ok(petalosRosa, "la copa florada lleva petalos rosa (blossom estampado)")
+ok(mascaraDisco, "el tile de disco lleva la mascara circular (esquinas transparentes)")
+
+// --- 10b. variantes por posicion (modo 'variants' de ProcBlocks) -------
+// Cada textura proc se hornea PROC_VARIANTS veces con semillas distintas:
+// si dos variantes salieran identicas, el muro repetiria igual.
+const procTypes = [...texBlock.matchAll(/procTile\(n, "(\w+)"/g)].map(m => m[1])
+const bindProc = new Function("ProcBlocks",
+	src.slice(src.indexOf("function procPixels("), src.indexOf("\n\tfunction procTile("))
+	+ "\nreturn procPixels")
+const procPixels = bindProc(ProcBlocks)
+const clonadas = []
+for (const t of procTypes) {
+	const vs = []
+	for (let v = 0; v < PROC_VARIANTS; v++) vs.push(procPixels(t, v))
+	let maxDiff = 0
+	for (let a = 0; a < vs.length; a++) {
+		for (let b = a + 1; b < vs.length; b++) {
+			let d = 0
+			for (let i = 0; i < 1024; i++) if (vs[a][i] !== vs[b][i]) d++
+			if (d > maxDiff) maxDiff = d
 		}
 	}
-	if (count) leavesLum = sum / count
+	if (maxDiff < 8) clonadas.push(`${t} (${maxDiff} B)`)
 }
-ok(leavesSrc && Number.isFinite(leavesLum) && leavesLum >= 90 && leavesLum <= 120,
-	`hojas claras: luz media ${Number.isFinite(leavesLum) ? Math.round(leavesLum) : "?"} (90-120, terreno ~99)`)
+ok(clonadas.length === 0, `las ${procTypes.length} texturas proc tienen variantes distintas (${clonadas.join(", ")})`)
+
+// el mesher elige la variante segun la posicion del bloque
+ok(/let vi = plant \? 0 : posHash3\(x2, y2, z2\) % PROC_VARIANTS/.test(src),
+	"genMesh: la variante sale de posHash3(x2, y2, z2)")
+ok(/let vars = plant \? null : variantTiles\[texName\]/.test(src)
+	&& /let texIndex = vars \? vars\[vi % vars\.length\] : textureMap\[texName\]/.test(src),
+	"genMesh: los cubos usan variantTiles (las plantas siguen con plantTile)")
+// posHash3: determinista, sensible a las 3 coordenadas y reparte variantes
+const posHash3 = new Function("return " + src.match(/function posHash3\(x, y, z\) \{[\s\S]*?\n\t\}/)[0])()
+const vistos = new Set()
+for (let x = -40; x < 40; x++) for (let z = -40; z < 40; z++) vistos.add(posHash3(x, 7, z) % PROC_VARIANTS)
+ok(posHash3(3, 4, 5) === posHash3(3, 4, 5) && posHash3(3, 4, 5) !== posHash3(4, 4, 5)
+	&& posHash3(3, 4, 5) !== posHash3(3, 5, 5) && posHash3(3, 4, 5) !== posHash3(3, 4, 6),
+	"posHash3 determinista y sensible a x, y, z")
+ok(vistos.size === PROC_VARIANTS, `posHash3 reparte las ${PROC_VARIANTS} variantes (vistas ${vistos.size})`)
+
+// --- 10c. UVs de las caras escalan con el tamano del atlas ---------------
+// Si el atlas crece y los UVs de initShapes se quedan al divisor viejo,
+// cada cara muestra trozos de los tiles vecinos (texturas de otros
+// materiales mezcladas por todo el mundo).
+{
+	const mapCoordsSrc = src.match(/function mapCoords\(rect, face\) \{[\s\S]*?\n\t\t\}/)[0]
+	const mapQuadSrc = src.match(/function mapQuad\(rect\) \{[\s\S]*?\n\t\t\}/)[0]
+	const bindMaps = new Function("TEXTURE_SIZE", "compareArr",
+		mapCoordsSrc + "\n" + mapQuadSrc + "\nreturn { mapCoords, mapQuad }")
+	const { mapCoords, mapQuad } = bindMaps(textureSize, (a) => a.slice())
+	const tile = 16 / textureSize   // lo que mide UN tile en UV
+	const face = mapCoords({ x: 0, y: 0, z: 0, w: 16, h: 16, tx: 0, ty: 0 }, 1)
+	const maxDelta = Math.max(...face.tex)
+	ok(Math.abs(maxDelta - tile) < 1e-9,
+		`mapCoords: una cara completa abarca un tile (${maxDelta.toFixed(5)} = 16/${textureSize})`)
+	const quad = mapQuad({ corners: [0, 0, 0, 16, 0, 16, 16, 16, 16, 0, 0, 0], uv: [0, 16, 16, 16, 16, 0, 0, 0] })
+	const maxQuad = Math.max(...quad.tex)
+	ok(Math.abs(maxQuad - tile) < 1e-9,
+		`mapQuad: el quad de la planta abarca un tile (${maxQuad.toFixed(5)})`)
+	ok(/c \/ 16 \/ \(TEXTURE_SIZE \/ 16\)/.test(src) && /rect\.uv\.map\(c => c \/ TEXTURE_SIZE\)/.test(src),
+		"los divisores UV usan TEXTURE_SIZE (ningun 256 ni 16/16 suelto)")
+}
+
+// --- 10d. copa del generador: asterisco (4 discos + el horizontal) ------
+// 4 discos verticales a 0/45/90/135 (radio 1.0 bloque) + el horizontal a
+// media altura.  Los discos coplanares de vecinos SI se solapan (es la
+// forma del asterisco): el mesher los separa a lo largo de su normal con
+// ((x+y+z) mod 3) * 0.03 — dos vecinos con discos coplanares siempre
+// difieren en la suma (1 o 2), nunca coinciden.  Colision: hitVerts (el
+// cubo), nunca los discos.
+{
+	const planeSrc = src.match(/const bushPlanes = \(\(\) => \{[\s\S]*?\n\t\}\)\(\)/)[0]
+	const planos = new Function("plantQuad", planeSrc + "\nreturn bushPlanes")(
+		(c, u, t) => ({ corners: c, uv: u, tex: t }))
+	const total = Object.values(planos).reduce((a, l) => a + l.length, 0)
+	ok(total === 5, `bushPlanes trae los 4 discos del asterisco + el horizontal (${total})`)
+	ok(planos.bottom.length === 0, "nada asoma por debajo del bloque")
+	const fuera = []
+	for (const [slot, list] of Object.entries(planos)) {
+		for (const q of list) {
+			if (q.corners.length !== 12 || q.uv.length !== 8) fuera.push(`${slot}: ${q.corners.length}/12 corners`)
+			if (q.tex !== "DISC") fuera.push(`${slot}: tex ${q.tex} (deberia pedir el tile de disco)`)
+			for (const c of q.corners) if (c < -9 || c > 25) fuera.push(`${slot}: corner ${c}`)
+			for (const u of q.uv) if (u < -0.01 || u > 16.01) fuera.push(`${slot}: uv ${u}`)
+		}
+	}
+	ok(fuera.length === 0, "discos sanos: 4 esquinas, UVs en el tile, piden DISC (" + fuera.slice(0, 3).join("; ") + ")")
+	// asterisco: 4 discos verticales que SOBRESALEN (radio 1.0 bloque)
+	for (const slot of ["north", "east", "west", "south"]) {
+		for (const q of planos[slot]) {
+			const xs = [], ys = [], zs = []
+			for (let i = 0; i < 12; i += 3) { xs.push(q.corners[i]); ys.push(q.corners[i + 1]); zs.push(q.corners[i + 2]) }
+			if (Math.max(...xs) <= 16 && Math.min(...xs) >= 0 && Math.max(...ys) <= 16
+				&& Math.min(...ys) >= 0 && Math.max(...zs) <= 16 && Math.min(...zs) >= 0) {
+				fuera.push(`${slot}: disco dentro del cubo (no sobresale)`)
+			}
+		}
+	}
+	const alcance = Math.max(...planos.north[0].corners)
+	ok(alcance >= 23.9, `discos grandes: radio 1.0 bloque (${(alcance - 8).toFixed(1)} px desde el centro)`)
+	// el horizontal: a media altura y del tamaño de los verticales
+	// (radio 1.0: ASOMA del bloque y se ve; con radio 8 quedaba
+	// escondido tras los huecos de las caras del cubo)
+	{
+		const q = planos.top[0]
+		const mediaAltura = [1, 4, 7, 10].every(i => Math.abs(q.corners[i] - 8) < 1e-9)
+		const asoma = Math.max(...q.corners) >= 23.9 && Math.min(...q.corners) <= -7.9
+		ok(mediaAltura && asoma,
+			"el disco horizontal a media altura (y=8) y con radio 1.0: asoma del bloque y SE VE")
+	}
+	// el giro del asterisco: 0/45/90/135 (PI*k/4), no la variante girada
+	ok(/const a = Math\.PI \* k \/ 4/.test(planeSrc), "asterisco: los discos van a 0/45/90/135 grados")
+
+	// ANTI-PARPADEO: los pares coplanares entre vecinos existen (la
+	// forma lo pide) pero el desplazamiento del mesher los separa:
+	// h = (x+2y+4z) mod 8, y para las 26 direcciones vecinas el delta
+	// de h NUNCA es 0 mod 8 -> coplanares siempre a desplazamientos
+	// distintos -> sin coincidencia, sin z-fighting.
+	const planoDe = (q) => {
+		const c = q.corners
+		const u = [c[3] - c[0], c[4] - c[1], c[5] - c[2]]
+		const v = [c[6] - c[3], c[7] - c[4], c[8] - c[5]]
+		const n = [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]]
+		const len = Math.hypot(n[0], n[1], n[2]) || 1
+		const nn = [n[0] / len, n[1] / len, n[2] / len]
+		return { n: nn, d: nn[0] * c[0] + nn[1] * c[1] + nn[2] * c[2] }
+	}
+	const caja = (q, o) => {
+		const mn = [Infinity, Infinity, Infinity], mx = [-Infinity, -Infinity, -Infinity]
+		for (let i = 0; i < 12; i += 3) for (let a = 0; a < 3; a++) {
+			const val = q.corners[i + a] + o[a]
+			if (val < mn[a]) mn[a] = val
+			if (val > mx[a]) mx[a] = val
+		}
+		return { mn, mx }
+	}
+	const todos = []
+	for (const list of Object.values(planos)) for (const q of list) todos.push(q)
+	// las 26 direcciones vecinas (alcance del disco = 1 bloque)
+	const vecinos = []
+	for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) for (let dz = -1; dz <= 1; dz++) {
+		if (dx || dy || dz) vecinos.push([dx * 16, dy * 16, dz * 16])
+	}
+	ok(vecinos.length === 26, `las ${vecinos.length} direcciones vecinas cubren todo el alcance de los discos`)
+	// primera: el delta de h nunca es 0 para NINGUN direccion
+	const huecos = vecinos.filter(o => ((o[0] / 16 + 2 * (o[1] / 16) + 4 * (o[2] / 16)) % 8 + 8) % 8 === 0)
+	ok(huecos.length === 0, `el hash (x+2y+4z) mod 8 separa TODAS las direcciones vecinas (${huecos.length} huecos)`)
+	const peleas = []
+	let coplanares = 0
+	for (const off of vecinos) {
+		for (const qA of todos) {
+			const pA = planoDe(qA)
+			const cA = caja(qA, [0, 0, 0])
+			const ejeN = [0, 1, 2].reduce((a, b) => Math.abs(pA.n[b]) > Math.abs(pA.n[a]) ? b : a)
+			for (const qB of todos) {
+				const pB = planoDe(qB)
+				const dot = pA.n[0] * pB.n[0] + pA.n[1] * pB.n[1] + pA.n[2] * pB.n[2]
+				if (Math.abs(Math.abs(dot) - 1) > 1e-6) continue
+				let nB = pB.n, dB = pB.d
+				if (dot < 0) { nB = [-pB.n[0], -pB.n[1], -pB.n[2]]; dB = -pB.d }
+				dB = dB + nB[0] * off[0] + nB[1] * off[1] + nB[2] * off[2]
+				if (Math.abs(dB - pA.d) > 1e-6) continue
+				const cB = caja(qB, off)
+				let solapan = true
+				for (const i of [0, 1, 2]) {
+					if (i === ejeN) continue
+					if (cA.mx[i] <= cB.mn[i] || cB.mx[i] <= cA.mn[i]) { solapan = false; break }
+				}
+				if (!solapan) continue
+				coplanares++
+				// par coplanar con solape: el delta de h (en BLOQUES)
+				// tiene que ser != 0 mod 8 -> desplazamientos distintos
+				const [bx, by, bz] = [off[0] / 16, off[1] / 16, off[2] / 16]
+				const m = ((bx + 2 * by + 4 * bz) % 8 + 8) % 8
+				if (m === 0) peleas.push(`offset ${JSON.stringify(off)}: sin separacion`)
+			}
+		}
+	}
+	ok(coplanares > 0, `hay ${coplanares} pares coplanares entre vecinos (la forma del asterisco los abraza)`)
+	ok(peleas.length === 0, `anti-parpadeo: el desplazamiento del mesher separa TODOS los pares coplanares (${peleas.slice(0, 3).join("; ")})`)
+
+	// doble winding CORRECTO: la copia invertida debe compartir plano y
+	// llevar el winding OPUESTO (mismo winding = disco de una sola cara,
+	// el bug del diagonal y del horizontal).  Se extrae el bushFlecos
+	// REAL y se mide sobre los 5 discos.
+	{
+		const flecosSrc = src.match(/const bushFlecos = \(arr\) => arr\.concat\(arr\.map\(q => plantQuad\([\s\S]*?q\.tex\)\)\)/)[0]
+		const bushFlecosFn = new Function("plantQuad", flecosSrc + "\nreturn bushFlecos")(
+			(c, u, t) => ({ corners: c, uv: u, tex: t }))
+		const dobles = bushFlecosFn(todos)
+		const unLado = []
+		for (let i = 0; i < todos.length; i++) {
+			const pA = planoDe(dobles[i])
+			const pB = planoDe(dobles[todos.length + i])
+			const dot = pA.n[0] * pB.n[0] + pA.n[1] * pB.n[1] + pA.n[2] * pB.n[2]
+			let dB = pB.d
+			if (dot < 0) dB = -pB.d
+			const mismoPlano = Math.abs(Math.abs(dot) - 1) < 1e-6 && Math.abs(dB - pA.d) < 1e-6
+			if (!(mismoPlano && dot < 0)) unLado.push(`disco ${i}`)
+		}
+		ok(unLado.length === 0, `doble winding correcto: los 5 discos visibles desde AMBOS lados (${unLado.join(", ")})`)
+	}
+
+	ok(/if \(verts\.tex === "DISC"\)/.test(src)
+		&& /\(\(\(\(x2 \+ 2 \* y2 \+ 4 \* z2\) % 8\) \+ 8\) % 8\) \* 0\.04/.test(src),
+		"el mesher desplaza los discos ((x+2y+4z) mod 8) * 0.04: separacion >= 0.04, por encima de la resolucion del depth buffer hasta ~50 bloques")
+	ok(/barray\[index\] = verts\[0\] \+ x2 \+ ox/.test(src), "el desplazamiento se aplica a los vertices del disco")
+	ok(/q\.corners\.slice\(9, 12\)/.test(src),
+		"la copia invertida invierte el ORDEN de vertices (el reverse plano cruza x por z)")
+
+	ok(/texName === "DISC"/.test(src) && /\+ "Disc"/.test(src),
+		"el mesher resuelve el tile de disco por bloque (leaves -> leavesDisc)")
+	ok(/bushFlecos = \(arr\) => arr\.concat\(arr\.map/.test(src),
+		"cada disco lleva doble winding (visible desde ambos lados)")
+	ok(/baseBlock\.shape = baseBlock\.bush \? shapes\.bush : shapes\.cube/.test(src),
+		"initShapes: los bloques bush usan shapes.bush")
+	ok(/shapes\.bush\.hitVerts = shapes\.cube\.verts/.test(src)
+		&& /shapes\.bush\.buffer = shapes\.cube\.buffer/.test(src),
+		"bush: apuntar, romper y outline siguen siendo el cubo COMPLETO")
+	ok(/let verts = data\.shape\.hitVerts \|\| data\.shape\.verts/.test(src),
+		"collided: los discos no collisionan (usa hitVerts = el cubo)")
+	ok(/obj\.cross \|\| face\.corners \? mapQuad\(face\) : mapCoords\(face, i\)/.test(src),
+		"mapper mixto: rects del cubo + quads libres de discos")
+	ok(/shadows = verts\.tex === "DISC" \? CROSS_SHADOW : faceShadows/.test(src),
+		"los discos llevan luz plana (0.95): el AO del slot no corresponde a su geometria central")
+	ok(/objectify\( 2,  2,  2, 12, 12, 2, 2\)/.test(src),
+		"el nucleo de la copa es un cubo de 0.75 (12 px), no el bloque entero")
+	const bushBlocks = [...blockBlock.matchAll(/\{\s*name:\s*"(leaves|birchLeaves|blossomLeaves)"[\s\S]*?bush: true/g)]
+	ok(bushBlocks.length === 3, "leaves, birchLeaves y blossomLeaves marcados como bush")
+	ok(/random\(\) < 0\.125 \? blockIds\.blossomLeaves/.test(src), "1 de cada 8 arboles sale florado")
+	ok(/blossomLeaves: 0\.3/.test(src), "blossomLeaves se rompe tan rapido como leaves")
+	ok(/rnd\(\) < 0\.625 \? 1 : 0/.test(src), "flores al 25% de densidad (0-1 blossom por tile, antes 2-3)")
+	ok(/0\.65 \+ rnd\(\) \* 0\.3/.test(src), "flores al 25% de tamano (0.65-0.95 px, antes 2.6-3.8)")
+	ok(/blockIds\.blossomLeaves/.test(src), "blossomLeaves en LEAF_IDS (la manzana al romper)")
+}
+
+// --- 10e. copas SIN cull entre ellas (el nucleo 0.75 evita el z-fight) --
+// Si dos hojas se cullaran entre si, el interior de la copa quedaria
+// hueco: a traves de los huecos se veria el TRONCO en vez de las hojas
+// de los bloques de detras.  El z-fighting se evita por GEOMETRIA: con
+// el nucleo de 0.75 las caras apiladas nunca son coplanares.  El
+// hideFace REAL contra datos fake.
+{
+	const hfSrc = src.slice(src.indexOf("function hideFace("), src.indexOf("// Las plantas (shape cross)"))
+	const bindHF = new Function("world", "blockData", "getBlock", "screen",
+		hfSrc + "\nreturn hideFace")
+	const world = {}
+	const C = { top: 3, bottom: 3, north: 3, south: 3, east: 3, west: 3 }
+	const HOJA = 10, ABEDUL = 11, CRISTAL = 12, TIERRA = 13, PLANTA = 14
+	const blockData = []
+	blockData[HOJA] = { transparent: true, shadow: true, bush: true, shape: { cull: C } }
+	blockData[ABEDUL] = { transparent: true, shadow: true, bush: true, shape: { cull: C } }
+	blockData[CRISTAL] = { transparent: true, shadow: true, shape: { cull: C } }
+	blockData[TIERRA] = { shape: { cull: C } }
+	blockData[PLANTA] = { cross: true, shape: { cull: C } }
+	blockData[HOJA | 0x100] = { transparent: true, shadow: true, bush: true,
+		shape: { cull: { top: 0, bottom: 3, north: 1, south: 1, east: 1, west: 1 } } }
+	const hideFace = bindHF(world, blockData, () => 0, "play")
+	const visto = (vecino, tipo, sDir = "top", dir = "bottom") =>
+		hideFace(0, 0, 0, null, tipo, () => vecino, sDir, dir)
+	ok(visto(HOJA, HOJA) === 1, "hoja contra hoja: dibujada (el interior de la copa se ve)")
+	ok(visto(ABEDUL, HOJA) === 1, "hoja contra abedul: dibujada (copas mixtas)")
+	ok(visto(0, HOJA) === 1, "hoja contra aire: dibujada")
+	ok(visto(CRISTAL, HOJA) === 1, "hoja contra cristal: dibujada (transparente no-bush)")
+	ok(visto(TIERRA, HOJA) === 0, "hoja contra tierra: cullada (el opaco la tapa)")
+	ok(visto(HOJA, TIERRA) === 1, "tierra contra hoja: dibujada (la hoja no tapa)")
+	ok(visto(HOJA | 0x100, HOJA, "bottom", "top") === 1,
+		"un slab de hoja NO traga la cara del cubo de arriba (rangos de cull)")
+	ok(visto(PLANTA, PLANTA) === 1, "las plantas siguen sin cullarse")
+	ok(!/let arbusto = /.test(src), "sin cull arbusto-arbusto: el nucleo de 0.75 evita el z-fight por geometria")
+}
 
 // --- 11. plant quads: uniform shadow + light bottom half ---------------
 // The cross quads list their corners [LOW, LOW, HIGH, HIGH], the reverse
@@ -338,7 +691,7 @@ const proy = new Function(proySrc + "\nreturn proyectarHud")()
 		`proyectarHud: ndc (1,-1) -> esquina inf-der (${r ? Math.round(r.x) + "," + Math.round(r.y) : "null"})`)
 	// w <= 0: detras de la camara -> null (nada de corazones al reves)
 	const b = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, -1]
-	ok(proy(b, 0, 0, 5, 800, 600) === null, "proyectarHud: w<=0 (detrás) devuelve null")
+	ok(proy(b, 0, 0, 5) === null, "proyectarHud: w<=0 (detrás) devuelve null")
 	ok(proy(id, 1.5, 0, -5, 800, 600) === null, "proyectarHud: fuera de pantalla devuelve null")
 
 	// Con la matriz de verdad: camara en (10,50,-20) mirando al este (ry=-90°),

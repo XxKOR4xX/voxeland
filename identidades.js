@@ -593,6 +593,15 @@ void main() {
 		return !!d && !d.passable
 	}
 
+	// Lava: la vaca la ESQUIVA (a diferencia del agua, de la que ademas
+	// bebe).  En los mocks de tools/check-identidades.mjs no existe
+	// blockIds.lava, y un id nunca es `undefined`, asi que ahi este
+	// filtro no cambia nada.
+	function esLava(b) {
+		const V = window.VXL
+		return !!V && !!V.blockIds && (b & 0xff) === V.blockIds.lava
+	}
+
 	// Bioma de (x,z) o null si el motor aun no esta.
 	function biomaEn(x, z) {
 		const V = window.VXL
@@ -812,7 +821,7 @@ void main() {
 		if (!solido(world.getBlock(x, y, z))) return null
 		const arriba = world.getBlock(x, y + 1, z)
 		if (solido(arriba) || solido(world.getBlock(x, y + 2, z))) return null
-		if ((arriba & 0xff) === V.blockIds.waterBlock) return null
+		if ((arriba & 0xff) === V.blockIds.waterBlock || esLava(arriba)) return null
 		return { x: x, y: y + 0.5 + f.alto * 0.7, z: z }
 	}
 
@@ -878,7 +887,8 @@ void main() {
 		// agua SIN solido debajo a la altura de los pies (si la hay,
 		// solido() ya devuelve false y se rechaza igual).
 		for (let y = suelo; y <= techo; y++) {
-			if ((world.getBlock(x, y, z) & 0xff) === V.blockIds.waterBlock) return false
+			const b = world.getBlock(x, y, z)
+			if ((b & 0xff) === V.blockIds.waterBlock || esLava(b)) return false
 		}
 		// Bloques centrados en enteros: el que esta bajo los pies es
 		// floor(pies - 0.5); los de encima, round(pies + delta).
@@ -1139,7 +1149,8 @@ void main() {
 		const z = Math.round(e.z + Math.cos(a) * 0.8)
 		const suelo = Math.floor(e.y - e.bottomH - 0.5)
 		for (let y = suelo; y <= suelo + 4; y++) {
-			if ((world.getBlock(x, y, z) & 0xff) === V.blockIds.waterBlock) return false
+			const b = world.getBlock(x, y, z)
+			if ((b & 0xff) === V.blockIds.waterBlock || esLava(b)) return false
 		}
 		if (!solido(world.getBlock(x, suelo + 1, z))) return false
 		if (!solido(world.getBlock(x, suelo + 2, z))) {
@@ -1165,7 +1176,7 @@ void main() {
 		let fondo = false
 		for (let y = suelo - 1; y >= suelo - 4; y--) {
 			const b = world.getBlock(x, y, z)
-			if ((b & 0xff) === V.blockIds.waterBlock) return false
+			if ((b & 0xff) === V.blockIds.waterBlock || esLava(b)) return false
 			if (solido(b)) { fondo = true; break }
 		}
 		return fondo
@@ -1623,8 +1634,8 @@ void main() {
 		const world = V.world
 		const ds = dt * (TICKS / 1000)
 
-		const agua = (world.getBlock(Math.round(e.x), Math.round(e.y - e.bottomH + 0.2), Math.round(e.z)) & 0xff)
-			=== V.blockIds.waterBlock
+		const bajo = (world.getBlock(Math.round(e.x), Math.round(e.y - e.bottomH + 0.2), Math.round(e.z)) & 0xff)
+		const agua = bajo === V.blockIds.waterBlock || esLava(bajo)
 		// Mismo orden que runGravity(): el suelo del fotograma anterior decide.
 		// En pleno salto el impulso manda: no se pone a cero hasta aterrizar.
 		if (e.onGround && e.saltarT <= 0) {
