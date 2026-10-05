@@ -1133,6 +1133,21 @@ function MineKhan() {
 	let trees = true
 	let caves = true
 
+	// ------------------------------------------------------------------
+	// Isla del menu principal (fondo en vivo).  menuIsla es el gate: solo
+	// mientras esta activa, rawColumnGen() devuelve la columna-isla y la
+	// distancia de render/niebla es MENU_RD.  Se apaga al crear o cargar
+	// una partida, antes de generar ningun chunk.
+	// ------------------------------------------------------------------
+	let menuIsla = false
+	let menuWorld = null // World del menu, cacheado para no regenerar al volver
+	const ISLA = { x: 0, z: 0, radio: 30, altura: 10, orilla: 6 }
+	const MENU_RD = 3 // 11x11 chunks en la ventana, niebla a 48 bloques
+	// RenderDistance efectiva: la del jugador, salvo en el menu.
+	function rdActiva() {
+		return menuIsla ? MENU_RD : settings.renderDistance
+	}
+
 	let blockIds = {}
 	blockData.forEach(block => blockIds[block.name] = block.id)
 	win.blockData = blockData
@@ -1145,6 +1160,29 @@ function MineKhan() {
 		renderDistance: 10,
 		fov: 70, // Field of view in degrees
 		mouseSense: 100 // Mouse sensitivity as a percentage of the default
+	}
+	// El PRIMER frame no se pinta hasta que los ajustes esten aplicados:
+	// si llegan despues de pintar (la DB es async), el FOV salta en mitad
+	// de la isla del menu un segundo o mas despues de cargar.
+	let ajustesListos = false
+	// Los ajustes ya estan fijados (espejo, DB o timeout): despues de eso NO
+	// se releen, porque initWorldsMenu() se llama tambien al salir de
+	// partidas y una lectura tardia podria pisar valores recien guardados
+	// (y mover el FOV en pantalla).
+	let ajustesFijados = false
+	// Espejo sincrono en localStorage: cubre el FOV/distancia/etc. ANTES de
+	// cualquier lectura async, asi el primer frame ya sale con ellos y la
+	// DB (que luego escribe lo mismo) no puede provocar ningun salto.
+	try {
+		let guardado = win.localStorage.getItem("voxeland.settings")
+		let espejo = guardado ? JSON.parse(guardado) : null
+		if (espejo && typeof espejo === "object") {
+			Object.assign(settings, espejo)
+			ajustesFijados = true
+			ajustesListos = true
+		}
+	} catch (e) {
+		console.error(e)
 	}
 	let locked = true
 	let generatedChunks
@@ -1648,6 +1686,12 @@ function MineKhan() {
 
 	// Visual biome at a column: surface blocks and tree density only.
 	function biomeAt(x, z) {
+		// Isla del menu: plains SIEMPRE.  El mundo del menu se siembra con
+		// un worldSeed aleatorio y su clima podria tocar desierto (genChunk
+		// le pondria arena a toda la isla) o pantano (tinte oscuro).
+		if (menuIsla) {
+			return "plains"
+		}
 		let c = climateEffAt(x, z)
 		if (!c) {
 			return "plains"
@@ -1703,6 +1747,11 @@ function MineKhan() {
 
 	// Tree density for the biome at a column
 	function treeChanceAt(x, z) {
+		// Isla del menu: plains da 0.002 (3 arboles en toda la isla).
+		// 0.012 sobre ~1300 columnas de cesped deja unos 15 arboles.
+		if (menuIsla) {
+			return 0.012
+		}
 		let biome = biomeAt(x, z)
 		if (biome === "desert") {
 			return biomeSettings.desertTreeChance
@@ -1727,11 +1776,60 @@ function MineKhan() {
 		return v === undefined ? biomeSettings.weedDensity : v
 	}
 
+	// Isla del menu principal: columna pura, sin ruido sembrado, para que
+	// se vea igual en todas las sesiones.  Devuelve la MISMA forma que
+	// rawColumnGen, de modo que genChunk pone cesped/arena/agua y tops[]
+	// sin tocar nada mas.  Los gen SIEMPRE enteros (terrainHeight deja
+	// escrito que tops/setBlock los exigen).
+	//
+	// Perfil en dos tramos (medido desde la orilla hacia dentro: s):
+	//   s < 0        fondo marino plano (seaShelfDepth bajo el mar)
+	//   0..orilla    rampa corta 59 -> playaTop.  Con la banda de arena
+	//                (playas.ancho = 4 sobre el nivel del mar) eso deja
+	//                ~3 anillos de agua poco profunda y ~3 de arena;
+	//                el resto de la isla es solo cesped.
+	//   > orilla     cuerpo suave: sube despacio hasta seaLevel + altura,
+	//                con un ola fina para que no salga una mesa plana.
+	function islaColumn(wx, wz) {
+		let dx = wx - ISLA.x
+		let dz = wz - ISLA.z
+		// Contorno irregular (tres senos: costa con bahias y peninsulas)
+		let d = Math.sqrt(dx * dx + dz * dz)
+			+ 3 * Math.sin(wx * 0.23) * Math.cos(wz * 0.19)
+			+ 1.5 * Math.sin((wx + wz) * 0.41)
+		let s = ISLA.radio - d
+		let nivel = riverSettings.seaLevel
+		let fondo = nivel - riverSettings.seaShelfDepth
+		let playaTop = nivel + Math.max(1, biomeSettings.beachWidth)
+		let cima = nivel + ISLA.altura
+		let gen
+		if (s <= 0) {
+			gen = fondo
+		} else if (s < ISLA.orilla) {
+			gen = Math.round(fondo + (s / ISLA.orilla) * (playaTop - fondo))
+		} else {
+			let u = Math.min(1, (s - ISLA.orilla) / (ISLA.radio - ISLA.orilla))
+			gen = Math.round(playaTop + u * (cima - playaTop)
+				+ 1.2 * Math.sin(wx * 0.09) * Math.cos(wz * 0.11))
+		}
+		if (gen < nivel) {
+			// lake solo bajo el agua: la fila contigua tiene agua al lado
+			// (nearLake en genChunk) y recibe el anillo de arena de la orilla.
+			return { gen: gen, water: true, river: false, lake: true, dw: Infinity }
+		}
+		return { gen: gen, water: false, river: false, lake: false, dw: Infinity }
+	}
+
 	// Pure per-column terrain computation: everything that determines the
 	// height, water state and beach zone of a column BEFORE any slope
 	// limiting. Being a pure function of world coordinates, adjacent chunks
 	// always compute border values identically (seam-free by construction).
 	function rawColumnGen(wx, wz) {
+		// Menu principal: la isla en vivo.  Un solo gancho; genChunk,
+		// populate y el relleno de agua funcionan sin mas cambios.
+		if (menuIsla) {
+			return islaColumn(wx, wz)
+		}
 		// Evaluated FIRST so the 1-entry memo serves terrainHeight below.
 		let shape = shapeFieldAt(wx, wz)
 		let gen = superflat ? 4 : terrainHeight(wx, wz)
@@ -2071,6 +2169,13 @@ function MineKhan() {
 	let previousScreen = screen
 	function changeScene(newScene) {
 		if (screen === "options") {
+			// Espejo sincrono (mismo contenido que la DB) para que el proximo
+			// arranque aplique los ajustes antes del primer frame.
+			try {
+				win.localStorage.setItem("voxeland.settings", JSON.stringify(settings))
+			} catch (e) {
+				console.error(e)
+			}
 			saveToDB("settings", settings).catch(e => console.error(e))
 		}
 
@@ -2096,6 +2201,10 @@ function MineKhan() {
 		previousScreen = screen
 		screen = newScene
 		win.screen = screen
+		// El menu principal pinta la isla en vivo a partir de ahora.
+		if (newScene === "main menu") {
+			activarMenuIsla()
+		}
 		mouseDown = false
 		drawScreens[screen]()
 		Button.draw()
@@ -4444,7 +4553,9 @@ function MineKhan() {
 			updateHUD = true
 			// Los menus (a diferencia del HUD) no se repintan en cada
 			// frame: si el sprite llega mientras se ve uno, pintarlo ya.
-			if (screen !== "play" && screen !== "loading" && drawScreens[screen]) {
+			// (Solo cuando ya estan los ajustes: pintar antes dejaria el
+			// FOV viejo y el salto se veria cuando lleguen.)
+			if (ajustesListos && screen !== "play" && screen !== "loading" && drawScreens[screen]) {
 				drawScreens[screen]()
 				Button.draw()
 				Slider.draw()
@@ -6537,7 +6648,7 @@ function MineKhan() {
 		return Math.max(ax, az)
 	}
 	function renderFilter(chunk) {
-		return maxDist(chunk.x >> 4, chunk.z >> 4, p.cx, p.cz) <= settings.renderDistance
+		return maxDist(chunk.x >> 4, chunk.z >> 4, p.cx, p.cz) <= rdActiva()
 	}
 
 	function debug(message) {
@@ -6812,8 +6923,8 @@ function MineKhan() {
 		}
 		tick() {
 			let tickStart = win.performance.now()
-			let maxChunkX = (p.x >> 4) + settings.renderDistance
-			let maxChunkZ = (p.z >> 4) + settings.renderDistance
+			let maxChunkX = (p.x >> 4) + rdActiva()
+			let maxChunkZ = (p.z >> 4) + rdActiva()
 			let chunk = maxChunkX + "," + maxChunkZ
 			if (chunk !== this.lastChunk) {
 				this.lastChunk = chunk
@@ -6859,8 +6970,16 @@ function MineKhan() {
 				if (this.populateQueue.length && !doneWork) {
 					let chunk = this.populateQueue[this.populateQueue.length - 1]
 					if (!chunk.caves) {
-						chunk.carveCaves()
-						debug("Carve caves")
+						if (menuIsla) {
+							// Isla del menu: sin cuevas.  Talar ~3,6M de
+							// llamadas de ruido (121 chunks x 60 niveles x
+							// 256 columnas) acelera muchisimo la generacion
+							// y evita boquetes a ras de cesped.
+							chunk.caves = true
+						} else {
+							chunk.carveCaves()
+							debug("Carve caves")
+						}
 					} else if (!chunk.populated) {
 						chunk.populate()
 						this.populateQueue.pop()
@@ -6888,7 +7007,8 @@ function MineKhan() {
 				if (!doneWork) {
 					break
 				}
-			} while(win.performance.now() - tickStart < 5)
+			} while(win.performance.now() - tickStart
+				< (menuIsla ? (menuViva ? 10 : 20) : 5))
 		}
 		render() {
 			initModelView(p)
@@ -6900,7 +7020,7 @@ function MineKhan() {
 
 			renderedChunks = 0
 
-			let dist = (settings.renderDistance) * 16
+			let dist = (rdActiva()) * 16
 			if (this.chunkGenQueue.length) {
 				this.chunkGenQueue.sort(sortChunks)
 				let chunk = this.chunkGenQueue[0]
@@ -6930,7 +7050,7 @@ function MineKhan() {
 			}
 		}
 		loadChunks() {
-			let renderDistance = settings.renderDistance + 2
+			let renderDistance = rdActiva() + 2
 			let cx = p.x >> 4
 			let cz = p.z >> 4
 			p.cx = cx
@@ -6958,13 +7078,13 @@ function MineKhan() {
 					}
 					if (!this.chunks[x][z]) {
 						chunk = new Chunk(x * 16, z * 16)
-						if (maxDist(cx, cz, x, z) <= settings.renderDistance) {
+						if (maxDist(cx, cz, x, z) <= rdActiva()) {
 							this.chunkGenQueue.push(chunk)
 						}
 						this.chunks[x][z] = chunk
 					}
 					chunk = this.chunks[x][z]
-					if (!chunk.buffer && !this.chunkGenQueue.includes(chunk) && maxDist(cx, cz, x, z) <= settings.renderDistance) {
+					if (!chunk.buffer && !this.chunkGenQueue.includes(chunk) && maxDist(cx, cz, x, z) <= rdActiva()) {
 						this.chunkGenQueue.push(chunk)
 					}
 					this.loaded[i++] = chunk
@@ -7509,6 +7629,13 @@ function MineKhan() {
 		})
 		Button.add(width / 2, 335, 300, 40, "Difficulty: Peaceful", "creation menu", nothing, always, "Coming soon\n\nPlease stop asking for mobs. Adding them will take a very long time. I know a lot of people want them, so just be patient.")
 		Button.add(width / 2, height - 90, 300, 40, "Create New World", "creation menu", r => {
+			// Sale del fondo del menu: el mundo real NO usa la isla y la
+			// camara vuelve al reposo (sin esto quedaria girada de la
+			// orbita y generaria terreno-isla en la partida nueva).
+			menuIsla = false
+			p.rx = 0
+			p.ry = 0
+			p.setDirection()
 			// A brand-new world always starts from current defaults AND a
 			// fresh, fully reseeded noise state — it can never inherit
 			// another world's seed or run with unseeded climate channels
@@ -7572,6 +7699,12 @@ function MineKhan() {
 		}, selected, "Export the save code into the text box above for copy/paste.")
 		Button.add(mid + 3 * x4, height - 30, w4, 40, "Cancel", "loadsave menu", r => changeScene("main menu"))
 		Button.add(mid - x2, height - 75, w2, 40, "Play Selected World", "loadsave menu", r => {
+			// Sale del fondo del menu: isla apagada y camara al reposo antes
+			// de generar (loadSave sobreescribirá rx/ry con las guardadas).
+			menuIsla = false
+			p.rx = 0
+			p.ry = 0
+			p.setDirection()
 			world = new World()
 			win.world = world
 
@@ -9185,7 +9318,11 @@ function MineKhan() {
 		cursor("")
 		mouseX = e.x
 		mouseY = e.y
-		drawScreens[screen]()
+		// El main menu ya repinta a cada frame (isla en vivo): volver a
+		// dibujarlo aqui solo duplicaria el tick/render del mundo.
+		if (screen !== "main menu") {
+			drawScreens[screen]()
+		}
 		Button.draw()
 		Slider.draw()
 		Slider.drag()
@@ -9534,7 +9671,9 @@ function MineKhan() {
 
 		if (screen === "play") {
 			play()
-		} else {
+		} else if (ajustesListos) {
+			// Sin ajustes todavia: pintar aqui dejaria el FOV viejo en
+			// pantalla (y el salto se veria despues).
 			drawScreens[screen]()
 			Button.draw()
 			Slider.draw()
@@ -9759,6 +9898,163 @@ function MineKhan() {
 		dirtbg = ctx.createImageData(width, height)
 		dirtbg.data.set(pixels)
 	}
+
+	// ------------------------------------------------------------------
+	// Escena en vivo del menu principal: isla con cesped, arboles y vacas.
+	// Reutiliza el pipeline de la partida (world.tick/render + identidades)
+	// con p como camara, que es la que usan chunks y mobs.
+	// ------------------------------------------------------------------
+	let menuViva = false // la isla ya tiene todas sus mallas (corte a fondo vivo)
+	let menuPoblada = false
+
+	function activarMenuIsla() {
+		menuIsla = true
+		menuPoblada = false
+		if (!menuWorld) {
+			// Se genera una sola vez y se cachea: volver al menú es gratis.
+			menuWorld = new World()
+		}
+		if (world !== menuWorld) {
+			// Un mundo de partida en memoria se descarta: su save vive en la
+			// DB y "Play Selected World" lo reconstruye desde el codigo.
+			world = menuWorld
+			win.world = world
+		}
+		// World deja fogDist en 16: sin esto la niebla tarda cientos de
+		// frames en llegar a MENU_RD*16 y la isla sale empanada al arrancar.
+		fogDist = MENU_RD * 16
+		// Fuerza loadChunks en el proximo tick (la ventana puede haber
+		// quedado calculada para otra posicion del jugador).
+		world.lastChunk = ","
+	}
+
+	// Camara en orbita lenta: una vuelta cada ~78 s.  rx negativo mira
+	// hacia abajo (-0,6 ~ -34 grados: el encuadre cae SOBRE la isla, no
+	// por encima de ella); setDirection() recalcula el frustum de canSee().
+	function camaraMenu(now) {
+		let a = now * 0.00008
+		p.x = ISLA.x + Math.cos(a) * 14
+		p.z = ISLA.z + Math.sin(a) * 14
+		p.y = riverSettings.seaLevel + ISLA.altura + 16
+		let dx = ISLA.x - p.x
+		let dz = ISLA.z - p.z
+		p.ry = Math.atan2(-dx, dz)
+		p.rx = -0.6
+		p.FOV(settings.fov)
+		p.setDirection()
+	}
+
+	// Todas las colas de generacion vacias y todos los chunks con malla.
+	function islaLista() {
+		if (!world || world !== menuWorld) {
+			return false
+		}
+		if (world.chunkGenQueue.length || world.generateQueue.length
+			|| world.populateQueue.length || world.meshQueue.length) {
+			return false
+		}
+		let c = world.sortedChunks
+		if (!c.length) {
+			return false
+		}
+		for (let i = 0; i < c.length; i++) {
+			if (!c[i].buffer) {
+				return false
+			}
+		}
+		return true
+	}
+
+	// Altura de suelo valida en la isla (misma idea que sueloColumna:
+	// tops[] es el suelo real, y no puede haber agua encima).
+	function sueloIsla(x, z) {
+		let ch = world.chunks[x >> 4] && world.chunks[x >> 4][z >> 4]
+		if (!ch || !ch.buffer || !ch.tops) {
+			return null
+		}
+		let y = ch.tops[(z & 15) * 16 + (x & 15)]
+		let b = world.getBlock(x, y, z) & 0xff
+		if (!b || b === blockIds.waterBlock) {
+			return null
+		}
+		return y + 0.5 + window.IDENTIDADES.vaca.alto * 0.7
+	}
+
+	// Seis vacas fijas en el interior de la isla; el mantenimiento de
+	// poblacion (objetivo 8) sube el resto despues.
+	const MENU_VACAS = [[-12, -4], [-6, 10], [3, -11], [11, 5], [-2, -14], [13, -8]]
+	function poblarIsla() {
+		if (menuPoblada) {
+			return
+		}
+		let V = window.VXLIdentidades
+		if (!V || !V.estado || !V.estado().listo) {
+			return // GLB de la vaca aun cargando: se reintenta al frame siguiente
+		}
+		if (world !== menuWorld) {
+			return
+		}
+		// El mantenimiento de poblacion (objetivo 8) puede habernos ganado:
+		// en ese caso NO restauramos, que restaurar([]) limpiaria la lista.
+		if (V.lista().length > 0) {
+			menuPoblada = true
+			return
+		}
+		// Marcamos el mundo actual (lo hace restaurar) ANTES de spawnear,
+		// para que updateIdentidades() no borre lo recien puesto al frame
+		// siguiente por cambio de mundo.
+		let alturas = []
+		let validas = 0
+		for (let i = 0; i < MENU_VACAS.length; i++) {
+			let y = sueloIsla(ISLA.x + MENU_VACAS[i][0], ISLA.z + MENU_VACAS[i][1])
+			alturas.push(y)
+			if (y !== null) {
+				validas++
+			}
+		}
+		if (!validas) {
+			return // sin ningun punto utilizable todavia: se reintenta
+		}
+		V.restaurar([])
+		let puestos = 0
+		for (let i = 0; i < MENU_VACAS.length; i++) {
+			if (alturas[i] === null) {
+				continue
+			}
+			if (V.spawn("vaca", ISLA.x + MENU_VACAS[i][0], alturas[i], ISLA.z + MENU_VACAS[i][1])) {
+				puestos++
+			}
+		}
+		menuPoblada = puestos > 0
+	}
+
+	// Un frame de la isla: camara, mundo y mobs en el canvas GL (que vive
+	// DETRAS del 2D con zIndex -1).  Solo se llama desde el main menu.
+	// Devuelve true si llego a pintar el canvas GL.
+	function menuFrame() {
+		if (!menuIsla || world !== menuWorld || !p) {
+			return false
+		}
+		camaraMenu(performance.now())
+		// El HUD/pausa dejo activo el program2D: GL tiene UN solo programa
+		// activo por contexto y los uniforms van al que este enganchado.
+		use3d()
+		// initBackgrounds deja el clearColor en negro para el pase de tierra
+		gl.clearColor(sky[0], sky[1], sky[2], 1.0)
+		// identidades apaga BLEND al dibujar la sombra: el agua necesita blending
+		gl.enable(gl.BLEND)
+		world.tick()
+		world.render()
+		if (window.updateIdentidades) window.updateIdentidades()
+		if (window.renderIdentidades) window.renderIdentidades()
+		if (!menuViva && islaLista()) {
+			menuViva = true
+		}
+		if (menuViva) {
+			poblarIsla()
+		}
+		return true
+	}
 	function initPlayer() {
 		p = new Camera()
 		p.speed = 0.075
@@ -9792,6 +10088,9 @@ function MineKhan() {
 		win.player = p
 		win.p2 = p2
 	}
+	// La lista de mundos y los ajustes se leen de la DB AQUI.  El flag
+	// ajustesListos (declarado junto a settings) decide cuando puede
+	// pintarse el primer frame.
 	function initWorldsMenu() {
 		while (window.worlds.firstChild) {
 			window.worlds.removeChild(window.worlds.firstChild)
@@ -9851,16 +10150,39 @@ function MineKhan() {
 				console.error(e)
 			}
 		}
-		loadFromDB().then(res => {
-			if(res && res.length) {
-				let index = res.findIndex(obj => obj.id === "settings")
-				if (index >= 0) {
-					Object.assign(settings, res[index].data) // Stored data overrides any hardcoded settings
-					p.FOV(settings.fov)
-					res.splice(index, 1)
+		// Ajustes y lista de mundos van POR SEPARADO: getAll() serializa
+		// todos los mundos guardados y con saves grandes puede tardar
+		// segundos, mientras que get("settings") lee UN registro.  El
+		// primer frame solo se espera de lo segundo.
+		loadFromDB("settings").then(reg => {
+			if (!ajustesFijados && reg && reg.data) {
+				ajustesFijados = true
+				Object.assign(settings, reg.data)
+				p.FOV(settings.fov)
+				// Espejo: el proximo arranque no dependera de la DB.
+				try {
+					win.localStorage.setItem("voxeland.settings", JSON.stringify(settings))
+				} catch (e) {
+					console.error(e)
 				}
 			}
-			
+		}).catch(e => console.error(e))
+			// En TODOS los casos (tambien si la DB falla o no resuelve) el
+			// primer frame se libera; el timeout evita quedarse sin pintar.
+			.then(() => { ajustesListos = true })
+		// Red de seguridad: si la DB no resuelve, se pinta con lo que haya
+		// (espejo o valores por defecto) y los ajustes tardios ya NO se
+		// aplican: hacerlo seria el salto de FOV que queremos evitar.
+		setTimeout(() => {
+			ajustesFijados = true
+			ajustesListos = true
+		}, 3000)
+
+		// Lista de mundos: NO bloquea el primer frame.
+		loadFromDB().then(res => {
+			if(res && res.length) {
+				res = res.filter(obj => obj.id !== "settings")
+			}
 			if (res && res.length) {
 				res = res.map(d => d.data).filter(d => d && d.code).sort((a, b) => b.edited - a.edited)
 				for (let data of res) {
@@ -9918,6 +10240,10 @@ function MineKhan() {
 		generatedChunks = 0
 
 		initPlayer()
+		// La lectura de los ajustes guardados (FOV...) arranca YA, antes de
+		// WebGL y de horneados: el primer frame se espera a ella, y solapada
+		// con la inicializacion casi nunca se nota la espera.
+		initWorldsMenu()
 		initWebgl()
 
 		if (win.location.origin === "https://www.kasandbox.org" && (loadString || MineKhan.toString().length !== 183240)) {
@@ -9926,13 +10252,17 @@ function MineKhan() {
 		}
 
 		initBackgrounds()
-		
-		drawScreens[screen]()
-		Button.draw()
-		Slider.draw()
+		// El arranque ya esta en "main menu" y changeScene no se llama: la
+		// isla del menu se activa aqui (guardada por el mismo flag que usa
+		// changeScene cuando se vuelve desde la pausa o las opciones).
+		if (screen === "main menu") {
+			activarMenuIsla()
+		}
 
+		// El primer dibujo lo hace gameLoop cuando lleguen los ajustes
+		// guardados (el FOV tiene que estar YA aplicado para que no se vea
+		// el salto): pintar aqui dejaria el FOV viejo en pantalla.
 		p.FOV(settings.fov)
-		initWorldsMenu()
 		initButtons()
 	}
 
@@ -9982,12 +10312,30 @@ function MineKhan() {
 		const dirt = () => ctx.putImageData(dirtbg, 0, 0)
 
 		drawScreens["main menu"] = () => {
-			ctx.putImageData(mainbg, 0, 0)
+			// Todavia sin ajustes (solo cabe en el primer instante: sin
+			// espejo en localStorage y con la DB sin responder): pintar
+			// aqui dejaria el FOV viejo y luego saltaria el bueno.
+			if (!ajustesListos) return
+			// Isla en vivo desde el PRIMER frame: el lienzo 2D queda
+			// transparente y el canvas GL (z-index -1) asoma por debajo,
+			// igual que en la pausa.  Mientras la isla genera se va llenando
+			// del centro hacia afuera (la niebla es del mismo azul que el
+			// cielo, asi que el hueco no destaca); el fondo horneado solo
+			// queda de RESPALDO si el frame GL no llego a pintarse.
+			if (menuFrame()) {
+				clear()
+			} else {
+				ctx.putImageData(mainbg, 0, 0)
+			}
 			title()
 			fill(220)
 			ctx.font = "20px " + '"Pirata One"'
 			ctx.textAlign = 'left'
 			text("VoxeLand " + version, width - (width - 2), height - 2)
+			// El lienzo 2D se borra a cada frame: los botones/sliders se
+			// repintan aqui (changeScene lo hace a su vez, es sin efecto).
+			Button.draw()
+			Slider.draw()
 		}
 
 	drawScreens.play = () => {
@@ -10116,6 +10464,9 @@ function MineKhan() {
 
 	// Give the font time to load and redraw the homescreen
 	setTimeout(e => {
+		// Todavia sin primer frame: no hay nada que repintar (el menu se
+		// repinta a cada frame en cuanto los ajustes esten cargados).
+		if (!ajustesListos) return
 		drawScreens[screen]()
 		Button.draw()
 		Slider.draw()
@@ -10123,6 +10474,7 @@ function MineKhan() {
 		// cargarla (canvas no espera a font-display), repintar todo.
 		if (document.fonts && document.fonts.load) {
 			document.fonts.load('16px "Pirata One"').then(function() {
+				if (!ajustesListos) return
 				drawScreens[screen]()
 				Button.draw()
 				Slider.draw()
@@ -10138,10 +10490,21 @@ function MineKhan() {
 			releasePointer()
 		}
 
+		// El PRIMER frame se espera a los ajustes guardados: pintar antes
+		// obligaria a cambiar el FOV (u otra opcion) en mitad de la escena,
+		// y el salto se ve.  Mientras tanto la pagina sigue como mientras
+		// carga el script, y el menu repinta solo en cuanto se libere.
+		if (!ajustesListos) {
+			win.raf = requestAnimationFrame(gameLoop)
+			return
+		}
+
 		// El inventario y el libro corren a cada frame para que el mundo y
 		// las entidades no se congelen con la E (la pausa no entra aqui:
-		// sigue pausando el juego).
-		if (screen === "play" || screen === "loading" || screen === "inventory" || screen === "book") {
+		// sigue pausando el juego).  El main menu tambien, porque ahi el
+		// fondo es la isla en vivo (cada frame orbital + vacas + agua).
+		if (screen === "play" || screen === "loading" || screen === "inventory" || screen === "book"
+			|| screen === "main menu") {
 			drawScreens[screen]()
 		}
 
