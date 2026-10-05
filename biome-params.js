@@ -141,16 +141,16 @@ window.WORLD_PARAMS = {
 
 	// ---------------- VEGETACIÓN (hierba decorativa en cruz) ----------------
 	vegetacion: {
-		densidad: 0.6,           // Fracción de columnas con hierba sobre el suelo de hierba (valor global y respaldo)
-		altas: 0.35,             // De esa hierba, fracción que son plantas altas de 2 bloques
+		densidad: 0.3,           // Fracción de columnas con hierba sobre el suelo de hierba (valor global y respaldo)
+		altas: 0.175,            // De esa hierba, fracción que son plantas altas de 2 bloques
 
 		// Densidad por bioma (claves de biomeAt() en inglés). Lo que no
 		// aparezca aquí cae en `densidad`. El pantano lleva POCO césped:
 		// se ve ralo, en su verde claro, por la ciénaga.
 		densidadPorBioma: {
-			plains: 0.6,
-			forest: 0.6,
-			swamp: 0.15,
+			plains: 0.3,
+			forest: 0.3,
+			swamp: 0.075,
 		},
 
 		// Tinte de las plantas (textura gris x este color). REGLA: NINGÚN

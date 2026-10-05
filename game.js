@@ -1262,9 +1262,9 @@ function MineKhan() {
 		forestTreeChance: wp("bosque", "arboles", 0.02),
 		swampTreeChance: wp("pantano", "arboles", 0.01),
 		plainsTreeChance: wp("llanuras", "arboles", 0.002),
-		weedDensity: wp("vegetacion", "densidad", 0.6),
+		weedDensity: wp("vegetacion", "densidad", 0.3),
 		weedDensityByBiome: wp("vegetacion", "densidadPorBioma", null), // Per-biome weed density (biomeAt keys); null/missing keys fall back to weedDensity
-		weedTall: wp("vegetacion", "altas", 0.35),
+		weedTall: wp("vegetacion", "altas", 0.175),
 		peakHeight: wp("terreno", "alturaPicos", 95), // Tall mountains get stone peaks above this height
 		beach: wp("playas", "activas", true), // Automatic sand beaches in the coast shelf band
 		borderRiverWidth: wp("rios", "ancho", 18), // Border-river width in blocks at sea level (constant: the edge is the pure meander curve)
