@@ -1,0 +1,564 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Generador de árboles voxel</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Silkscreen:wght@400;700&display=swap" rel="stylesheet">
+<style>
+:root{
+  --sky-top:#7fb9ee; --sky-bot:#e4f1fb;
+  --panel:rgba(250,252,250,.90); --ink:#1b2a1f; --muted:#59695d; --line:rgba(27,42,31,.16);
+  --accent:#3b8a2a; --accent-ink:#ffffff; --chip:#e8efe6; --chip-on:#2f6f22;
+  box-sizing:border-box;
+  padding-top:env(safe-area-inset-top,0px);
+  padding-bottom:env(safe-area-inset-bottom,0px);
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --sky-top:#0b1530; --sky-bot:#2b4468;
+    --panel:rgba(18,26,20,.90); --ink:#e6efe3; --muted:#9bb09f; --line:rgba(230,239,227,.16);
+    --accent:#6cc24a; --accent-ink:#0e1a10; --chip:#223027; --chip-on:#6cc24a;
+  }
+}
+:root[data-theme="dark"]{
+  --sky-top:#0b1530; --sky-bot:#2b4468;
+  --panel:rgba(18,26,20,.90); --ink:#e6efe3; --muted:#9bb09f; --line:rgba(230,239,227,.16);
+  --accent:#6cc24a; --accent-ink:#0e1a10; --chip:#223027; --chip-on:#6cc24a;
+}
+html{scroll-padding-top:env(safe-area-inset-top,0px);height:100%}
+*,*::before,*::after{box-sizing:inherit}
+body{
+  margin:0;height:100%;overflow:hidden;position:relative;
+  background:linear-gradient(180deg,var(--sky-top),var(--sky-bot));
+  font:14px/1.4 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;color:var(--ink);
+}
+canvas{display:block;width:100%;height:100%;touch-action:none;cursor:grab}
+canvas:active{cursor:grabbing}
+
+#panel{
+  position:absolute;left:12px;top:12px;width:304px;max-height:calc(100% - 24px);
+  overflow-y:auto;background:var(--panel);border:1px solid var(--line);border-radius:10px;
+  padding:14px 14px 12px;backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);
+}
+#panel[hidden]{display:none}
+h1{font:700 15px/1.2 "Silkscreen",ui-monospace,monospace;margin:0 0 3px;letter-spacing:.2px}
+.sub{margin:0 0 12px;color:var(--muted);font-size:12.5px}
+.chips{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px}
+.chip{
+  font:400 12px "Silkscreen",ui-monospace,monospace;padding:6px 9px;border-radius:6px;
+  border:1px solid var(--line);background:var(--chip);color:var(--ink);cursor:pointer;
+}
+.chip[aria-pressed="true"]{background:var(--chip-on);color:var(--accent-ink);border-color:transparent}
+.chip:focus-visible,button:focus-visible,input:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.row{display:flex;gap:8px;align-items:center;margin-bottom:12px}
+.row label{flex:0 0 auto;color:var(--muted);font-size:12.5px}
+input[type=number]{
+  flex:1;min-width:0;padding:6px 8px;border-radius:6px;border:1px solid var(--line);
+  background:transparent;color:var(--ink);font:inherit;
+}
+button.btn{
+  padding:7px 11px;border-radius:6px;border:1px solid var(--line);background:var(--chip);
+  color:var(--ink);font:inherit;cursor:pointer;white-space:nowrap;
+}
+button.primary{background:var(--accent);color:var(--accent-ink);border-color:transparent;font-weight:600}
+.slider{margin-bottom:9px}
+.slider .top{display:flex;justify-content:space-between;font-size:12.5px;margin-bottom:1px}
+.slider .top output{color:var(--muted);font-variant-numeric:tabular-nums}
+input[type=range]{width:100%;margin:0;accent-color:var(--accent)}
+.checks{display:grid;gap:6px;margin:12px 0}
+.checks label{display:flex;gap:8px;align-items:center;font-size:13px;cursor:pointer}
+.checks input{accent-color:var(--accent);width:16px;height:16px;margin:0}
+.btns{display:flex;gap:8px;flex-wrap:wrap}
+#stats{margin:12px 0 0;color:var(--muted);font-size:12px;font-variant-numeric:tabular-nums}
+#help{margin:8px 0 0;color:var(--muted);font-size:12px}
+
+#toggle{
+  position:absolute;right:12px;top:12px;z-index:3;
+  font:700 12px "Silkscreen",ui-monospace,monospace;padding:9px 12px;border-radius:8px;
+  background:var(--panel);color:var(--ink);border:1px solid var(--line);cursor:pointer;
+  backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);
+}
+@media (max-width:700px){
+  #panel{left:8px;right:8px;top:auto;bottom:8px;width:auto;max-height:52%}
+  #toggle{top:8px;right:8px}
+}
+@media (prefers-reduced-motion: reduce){ *{scroll-behavior:auto} }
+</style>
+</head>
+<body>
+<canvas id="c" aria-label="Vista 3D del árbol generado"></canvas>
+<button id="toggle" type="button" aria-expanded="true" aria-controls="panel">Ajustes</button>
+
+<section id="panel" aria-label="Controles del generador">
+  <h1>Generador de árboles</h1>
+  <p class="sub">Ramas que se bifurcan en espiral, se afinan y buscan la luz. Baja la altura para un árbol joven; al mínimo queda la plántula.</p>
+
+  <div class="chips" id="chips" role="group" aria-label="Especie"></div>
+
+  <div class="row">
+    <label for="seed">Semilla</label>
+    <input id="seed" type="number" step="1" value="7">
+    <button class="btn primary" id="dice" type="button">Árbol nuevo</button>
+  </div>
+
+  <div id="sliders"></div>
+
+  <div class="checks">
+    <label><input type="checkbox" id="leaves" checked> Mostrar hojas</label>
+    <label><input type="checkbox" id="shadows" checked> Sombras</label>
+    <label><input type="checkbox" id="spin" checked> Girar automáticamente</label>
+  </div>
+  <div class="btns">
+    <button class="btn" id="reset" type="button">Restablecer especie</button>
+  </div>
+  <p id="stats"></p>
+  <p id="help">Arrastra para orbitar, rueda o pellizco para acercar. Desactiva las hojas para ver solo la estructura de ramas.</p>
+</section>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+/*GEN_START*/
+function mulberry32(a){return function(){a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296}}
+const K=(x,y,z)=>(x+128)|((y+128)<<8)|((z+128)<<16);
+const cross=(a,b)=>[a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0]];
+function norm(a){const l=Math.hypot(a[0],a[1],a[2])||1;a[0]/=l;a[1]/=l;a[2]/=l;return a}
+
+/* Genera el árbol como un Map de voxels {x,y,z,t}  t:0 = tronco/rama, t:1 = hoja.
+   Dos generadores aleatorios separados: uno para la estructura y otro para las hojas,
+   así mover los controles de follaje no cambia la forma de las ramas. */
+function generateTree(P, seed){
+  const rb=mulberry32(seed|0);            // estructura
+  const rl=mulberry32((seed|0)*31+977);   // hojas
+  const vox=new Map();
+  const inb=(x,y,z)=>x>-100&&x<100&&z>-100&&z<100&&y<120;
+  const putLog=(x,y,z)=>{ if(y<0||!inb(x,y,z))return; vox.set(K(x,y,z),{x,y,z,t:0}); };
+  const putLeaf=(x,y,z)=>{
+    if(y<2||!inb(x,y,z))return false;
+    const k=K(x,y,z); if(vox.has(k))return false;
+    vox.set(k,{x,y,z,t:1}); return true;
+  };
+
+  // Todo el leño es de 1 bloque, como en Minecraft. Se rellenan los saltos
+  // diagonales para que cada bloque quede unido por una cara al anterior.
+  const putVine=(x,y,z)=>{
+    if(y<1||!inb(x,y,z))return false;
+    const k=K(x,y,z); if(vox.has(k))return false;
+    vox.set(k,{x,y,z,t:2}); return true;
+  };
+  function logStep(c,pv){
+    const q=[Math.round(c[0]),Math.round(c[1]),Math.round(c[2])];
+    if(pv){
+      const dx=q[0]-pv[0],dy=q[1]-pv[1],dz=q[2]-pv[2];
+      if(Math.abs(dx)+Math.abs(dy)+Math.abs(dz)>1){
+        if(dy!==0) putLog(pv[0],q[1],pv[2]);
+        if(dx!==0&&dz!==0) putLog(q[0],q[1],pv[2]);
+        else if(dy===0) putLog(q[0],q[1],pv[2]);
+      }
+    }
+    putLog(q[0],q[1],q[2]);
+    return q;
+  }
+
+  // Los árboles bajos (jóvenes) tienen la copa a escala de su altura
+  const sizeF=Math.max(0.4,Math.min(1,P.height/(P.refH||P.height)));
+  function leafBlob(c,R,squash){
+    if(R<0.9)return;
+    R=Math.max(1.7,R*sizeF);          // copa mínima: un árbol joven siempre tiene follaje
+    const ry=Math.max(0.9,R*squash);
+    const x0=Math.round(c[0]),y0=Math.round(c[1]),z0=Math.round(c[2]);
+    const Rx=Math.ceil(R),Ry=Math.ceil(ry);
+    for(let dx=-Rx;dx<=Rx;dx++)for(let dy=-Ry;dy<=Ry;dy++)for(let dz=-Rx;dz<=Rx;dz++){
+      const ex=(x0+dx-c[0])/R, ey=(y0+dy-c[1])/ry, ez=(z0+dz-c[2])/R;
+      const q=ex*ex+ey*ey+ez*ez;
+      if(q>1)continue;
+      if(rl()>P.leafDensity*(1.5-1.2*q))continue;   // borde irregular
+      const placed=putLeaf(x0+dx,y0+dy,z0+dz);
+      if(placed && P.hang>0 && dy<=0 && rl()<P.hang){
+        const l=2+Math.floor(rl()*P.hangLen);
+        for(let k=1;k<=l;k++) putLeaf(x0+dx,y0+dy-k,z0+dz);
+      }
+    }
+  }
+
+  let budget=7000; // tope de ramas para que nunca se cuelgue
+  const lean=[(rb()-0.5)*2,(rb()-0.5)*2];
+
+  function branch(start,dir,len,r0,depth){
+    if(budget--<=0)return;
+    const pos=start.slice(), d=norm(dir.slice());
+    const steps=Math.max(2,Math.ceil(len*2));
+    const rEnd=depth===0? r0*0.5 : Math.max(0.45,r0*0.4);
+    let pv=null;
+
+    // Puntos donde nacen las ramas hijas (azimut en ángulo áureo => espiral natural)
+    const kids=[];
+    if(depth<P.levels && (depth===0||len>3)){
+      const n= depth===0 ? P.branches
+             : Math.round(P.subBranches*Math.pow(0.75,depth-1));
+      const s0= depth===0 ? P.branchStart : 0.3;
+      for(let i=0;i<n;i++){
+        const u=(i+0.25+rb()*0.5)/n;
+        const t=Math.min(1,s0+(1-s0)*u);
+        kids.push({step:Math.min(steps,Math.floor(t*steps)),u,az:i*2.39996+rb()*0.9+depth*1.3});
+      }
+    }
+
+    for(let i=0;i<=steps;i++){
+      const t=i/steps;
+      const r=Math.max(0.5,r0+(rEnd-r0)*t);
+      pv=logStep(pos,pv);
+      if(depth===0&&P.thick){putLog(pv[0]+1,pv[1],pv[2]);putLog(pv[0],pv[1],pv[2]+1);putLog(pv[0]+1,pv[1],pv[2]+1);}
+
+      if(P.leafAlong && depth>=1 && i%2===0 && t>0.12)
+        leafBlob(pos,P.leafR*(1-0.55*t),P.leafSquash);
+
+      for(const k of kids){
+        if(k.step!==i)continue;
+        const up=Math.abs(d[1])>0.95?[1,0,0]:[0,1,0];
+        const U=norm(cross(d,up)), V=cross(d,U);
+        let ang,clen;
+        if(depth===0){
+          ang=P.angle*(1.15-0.35*k.u)*(0.85+rb()*0.3);
+          const f=P.conical ? (1-k.u)*0.95+0.1 : 1-0.5*k.u;
+          clen=P.height*P.lenBase*f*(0.85+rb()*0.3);
+        }else{
+          ang=P.angle*(0.75+rb()*0.5);
+          clen=len*P.lenFactor*(0.75+rb()*0.5);
+        }
+        const a=ang*Math.PI/180, s=Math.sin(a), c=Math.cos(a);
+        const cd=[
+          d[0]*c+(U[0]*Math.cos(k.az)+V[0]*Math.sin(k.az))*s,
+          d[1]*c+(U[1]*Math.cos(k.az)+V[1]*Math.sin(k.az))*s,
+          d[2]*c+(U[2]*Math.cos(k.az)+V[2]*Math.sin(k.az))*s];
+        // las sub-ramas no se doblan hacia el suelo salvo en árboles de ramas caídas
+        if(depth>=1 && P.tropism>-0.3 && cd[1]<0.05) cd[1]=Math.abs(cd[1])*0.5+0.05;
+        branch(pos,cd,clen,Math.max(0.5,r*P.childRadius),depth+1);
+      }
+
+      // avanzar y orientar
+      pos[0]+=d[0]*0.5; pos[1]+=d[1]*0.5; pos[2]+=d[2]*0.5;
+      const j=P.jitter*(depth===0?0.5:1);
+      d[0]+=(rb()-0.5)*j; d[1]+=(rb()-0.5)*j*0.6; d[2]+=(rb()-0.5)*j;
+      if(depth>0) d[1]+=P.tropism*0.1;                 // fototropismo / caída
+      else { d[0]+=lean[0]*P.lean*0.004; d[2]+=lean[1]*P.lean*0.004; }
+      norm(d);
+    }
+
+    // Las ramas finales siempre llevan hojas (así los árboles bajos no quedan pelados)
+    if(P.leafR>0 && (depth>=P.leafMinDepth || kids.length===0)){
+      const f=(depth>=P.levels?1:0.7)*(depth===0?0.8:1);
+      leafBlob(pos,P.leafR*f*(0.8+rl()*0.4),P.leafSquash);
+    }
+  }
+
+  const tilt=0.12*P.lean;
+  branch([0,0,0],[lean[0]*tilt,1,lean[1]*tilt],P.height,P.trunkR,0);
+  if(P.vines>0){
+    const logs=[],leaves=[];
+    for(const o of vox.values()) (o.t===0?logs:leaves).push(o);
+    for(const o of logs){
+      if(o.y<3)continue;
+      for(const [dx,dz] of [[1,0],[-1,0],[0,1],[0,-1]]){
+        if(vox.has(K(o.x+dx,o.y,o.z+dz)))continue;
+        if(rl()<P.vines*0.06){
+          const l=3+Math.floor(rl()*9);
+          for(let k=0;k<l;k++) if(!putVine(o.x+dx,o.y-k,o.z+dz))break;
+        }
+      }
+    }
+    for(const o of leaves){
+      if(vox.has(K(o.x,o.y-1,o.z)))continue;
+      if(rl()<P.vines*0.05){
+        const l=1+Math.floor(rl()*7);
+        for(let k=1;k<=l;k++) if(!putVine(o.x,o.y-k,o.z))break;
+      }
+    }
+  }
+  return vox;
+}
+/*GEN_END*/
+
+/* ---------- Especies ---------- */
+const BASE={height:20,trunkR:2.2,branches:9,subBranches:4,levels:3,angle:50,tropism:.25,jitter:.12,
+  leafR:4,leafDensity:.85,lenBase:.42,lenFactor:.62,branchStart:.38,childRadius:.55,leafSquash:.8,
+  leafAlong:false,conical:false,lean:.3,hang:0,hangLen:6,leafMinDepth:0,swamp:false,thick:false,vines:0};
+const SPECIES={
+  roble:{name:'Roble',p:{height:13,trunkR:2.3,branches:5,subBranches:5,levels:3,angle:62,tropism:.08,jitter:.3,
+    leafR:3.2,leafDensity:.92,lenBase:.58,lenFactor:.72,branchStart:.26,leafSquash:.75,lean:.9,leafMinDepth:2},
+    bark:['#5b4328','#6a4e2e','#4e3a22','#745636'],leaves:['#2f6f24','#3b8230','#2a6320','#47913a']},
+  abedul:{name:'Abedul',p:{height:26,trunkR:1.1,branches:12,subBranches:3,levels:2,angle:34,tropism:.5,jitter:.1,
+    leafR:2.6,leafDensity:.65,lenBase:.3,lenFactor:.6,branchStart:.4,leafSquash:1.1,lean:.5},
+    bark:['#e6e2d6','#efece2','#d9d5c8'],marks:'#2e2c2a',leaves:['#7fb23a','#8fc044','#6da230']},
+  pino:{name:'Pino',p:{height:28,trunkR:1.5,branches:36,subBranches:0,levels:1,angle:72,tropism:-.1,jitter:.05,
+    leafR:2.2,leafDensity:.95,lenBase:.25,branchStart:.12,leafSquash:.42,leafAlong:true,conical:true,lean:.1},
+    bark:['#4a3622','#3d2c1a','#54402a'],leaves:['#1f4d2b','#1a4224','#265a33']},
+  acacia:{name:'Acacia',p:{height:17,trunkR:1.6,branches:5,subBranches:4,levels:2,angle:55,tropism:.12,jitter:.12,
+    leafR:5.5,leafDensity:.9,lenBase:.48,lenFactor:.7,branchStart:.62,leafSquash:.28,lean:1.1},
+    bark:['#7a6a55','#6b5c48','#85755e'],leaves:['#7da038','#8fb040','#6b9030']},
+  sauce:{name:'Pantano',p:{height:15,trunkR:1.9,branches:8,subBranches:5,levels:2,angle:60,tropism:-.55,jitter:.14,
+    leafR:2.8,leafDensity:.75,lenBase:.42,lenFactor:.7,branchStart:.5,leafSquash:.9,lean:.5,hang:.14,hangLen:7,vines:.5},
+    bark:['#5a5240','#4b4434','#665d49'],leaves:['#6f8f3c','#7d9c46','#617f34'],vines:['#4d6b2a','#587731'],
+    grass:['#5c7a3a','#667f3f','#546f35']},
+  jungla:{name:'Jungla',p:{height:28,trunkR:1,branches:7,subBranches:2,levels:2,angle:58,tropism:.2,jitter:.1,
+    leafR:4.6,leafDensity:.9,lenBase:.3,lenFactor:.6,branchStart:.62,leafSquash:.6,lean:.4,leafMinDepth:1,vines:1},
+    bark:['#6a5a3a','#5a4b30','#756445'],leaves:['#2f8a1f','#3a9c27','#27781a'],vines:['#1f6a17','#2a7a1e','#1a5a14'],
+    grass:['#3f9a26','#48a62c','#378c20']},
+  gigante:{name:'Jungla gigante',p:{height:42,trunkR:1,branches:11,subBranches:3,levels:2,angle:60,tropism:.2,jitter:.08,
+    leafR:6,leafDensity:.92,lenBase:.26,lenFactor:.62,branchStart:.6,leafSquash:.5,lean:.2,leafMinDepth:1,vines:1,thick:true},
+    bark:['#6a5a3a','#5a4b30','#756445'],leaves:['#2f8a1f','#3a9c27','#27781a'],vines:['#1f6a17','#2a7a1e','#1a5a14'],
+    grass:['#3f9a26','#48a62c','#378c20']}
+};
+const SLIDERS=[
+  {k:'height',label:'Altura (mínimo = plántula)',min:2,max:48,step:1,u:' bloques'},
+  {k:'branches',label:'Ramas principales',min:2,max:40,step:1},
+  {k:'subBranches',label:'Sub-ramas por rama',min:0,max:8,step:1},
+  {k:'levels',label:'Niveles de ramificación',min:1,max:4,step:1},
+  {k:'lenBase',label:'Longitud de ramas',min:0.15,max:0.9,step:0.01},
+  {k:'angle',label:'Apertura de las ramas',min:15,max:90,step:1,u:'°'},
+  {k:'tropism',label:'Busca la luz ↑ / cae ↓',min:-1,max:1,step:0.05},
+  {k:'jitter',label:'Torcedura',min:0,max:0.4,step:0.01},
+  {k:'leafR',label:'Tamaño del follaje',min:0,max:8,step:0.5},
+  {k:'leafDensity',label:'Densidad de hojas',min:0.2,max:1,step:0.05}
+];
+
+/* ---------- Estado ---------- */
+let speciesKey='roble';
+const makeP=k=>{const q=Object.assign({},BASE,SPECIES[k].p);q.refH=q.height;return q;};
+let P=makeP('roble');
+let seed=7;
+
+/* ---------- Escena ---------- */
+const canvas=document.getElementById('c');
+const renderer=new THREE.WebGLRenderer({canvas,antialias:true,alpha:true});
+renderer.setClearColor(0x000000,0);
+renderer.shadowMap.enabled=true;
+renderer.shadowMap.type=THREE.PCFSoftShadowMap;
+const scene=new THREE.Scene();
+const camera=new THREE.PerspectiveCamera(45,1,0.1,600);
+
+scene.add(new THREE.HemisphereLight(0xcfe6ff,0x6b5a40,0.85));
+const sun=new THREE.DirectionalLight(0xfff3dc,0.85);
+sun.position.set(28,48,20);
+sun.castShadow=true;
+sun.shadow.mapSize.set(2048,2048);
+const sc=sun.shadow.camera; sc.left=-42;sc.right=42;sc.top=42;sc.bottom=-42;sc.near=1;sc.far=160;
+sun.shadow.bias=-0.0008; sun.shadow.normalBias=0.3;
+scene.add(sun);
+
+function pixelTexture(kind){
+  const S=16,cv=document.createElement('canvas');cv.width=cv.height=S;
+  const ctx=cv.getContext('2d'),img=ctx.createImageData(S,S);
+  const r=mulberry32(kind==='log'?11:kind==='leaf'?22:33);
+  const col=[];for(let x=0;x<S;x++)col.push(r());
+  for(let y=0;y<S;y++)for(let x=0;x<S;x++){
+    let v;
+    if(kind==='log') v=0.78+col[x]*0.14+r()*0.08-(x%5===0?0.12:0);
+    else if(kind==='leaf'){const q=r();v=q<0.16?0.58:q>0.88?1:0.84+r()*0.08;}
+    else v=0.84+r()*0.16;
+    const g=Math.round(Math.min(1,v)*255),i=(y*S+x)*4;
+    img.data[i]=img.data[i+1]=img.data[i+2]=g;img.data[i+3]=255;
+  }
+  ctx.putImageData(img,0,0);
+  const t=new THREE.CanvasTexture(cv);
+  t.magFilter=THREE.NearestFilter;t.minFilter=THREE.NearestMipmapLinearFilter;
+  return t;
+}
+const geo=new THREE.BoxGeometry(1,1,1);
+function makeInst(tex,cap){
+  const m=new THREE.InstancedMesh(geo,new THREE.MeshLambertMaterial({map:tex}),cap);
+  m.instanceColor=new THREE.InstancedBufferAttribute(new Float32Array(cap*3),3);
+  m.frustumCulled=false;m.castShadow=true;m.receiveShadow=true;m.count=0;
+  scene.add(m);return m;
+}
+const CAP={log:24000,leaf:70000,ground:6000};
+const logMesh=makeInst(pixelTexture('log'),CAP.log);
+const leafMesh=makeInst(pixelTexture('leaf'),CAP.leaf);
+const groundMesh=makeInst(pixelTexture('ground'),CAP.ground);
+
+const dummy=new THREE.Object3D(), tmp=new THREE.Color();
+function paintGround(){
+  const sp=SPECIES[speciesKey];
+  const r=mulberry32(5),grass=(sp.grass||['#5fa83a','#68b342','#58a035']).map(c=>new THREE.Color(c)),
+        dirt=['#7a5a3a','#6e5034','#84613f'].map(c=>new THREE.Color(c));
+  let i=0;const N=24;
+  for(let x=-N;x<=N;x++)for(let z=-N;z<=N;z++)for(let y=-2;y<=-1;y++){
+    dummy.position.set(x,y,z);dummy.updateMatrix();groundMesh.setMatrixAt(i,dummy.matrix);
+    const pal=y===-1?grass:dirt;tmp.copy(pal[Math.floor(r()*pal.length)]).multiplyScalar(0.92+r()*0.12);
+    groundMesh.setColorAt(i,tmp);i++;
+  }
+  groundMesh.count=i;
+  groundMesh.instanceMatrix.needsUpdate=true;groundMesh.instanceColor.needsUpdate=true;
+}
+
+/* ---------- Plántula: sprite de 16 × 16 px (1 bloque), como el brote de Minecraft ---------- */
+const SAP_H=14;   // altura en píxeles de la plántula (de 16 px que mide un bloque)
+const sapTex={};
+const shade=(hex,f)=>'#'+new THREE.Color(hex).multiplyScalar(f).getHexString();
+function saplingTexture(key,h){
+  const id=key+h; if(sapTex[id])return sapTex[id];
+  const sp=SPECIES[key],cv=document.createElement('canvas');cv.width=cv.height=16;
+  const ctx=cv.getContext('2d'),r=mulberry32(h*97+key.length*31);
+  const px=(x,y,c)=>{ctx.fillStyle=c;ctx.fillRect(x,y,1,1);};
+  const stem=shade(sp.bark[0],1.1),stemD=shade(sp.bark[0],0.8),L=sp.leaves,top=16-h;
+  const cr=Math.min(5,Math.round(h/3)),cy=top+cr;
+  for(let y=cy;y<16;y++){px(8,y,y%2?stem:stemD);px(7,y,stemD);}
+  for(let y=top;y<=top+2*cr;y++)for(let x=8-cr-1;x<=8+cr;x++){
+    const dx=(x+0.5-8)/(cr+0.5),dy=(y+0.5-(cy+0.5))/(cr+0.5),q=dx*dx+dy*dy;
+    if(q>1)continue;
+    if(q>0.55&&r()<0.25)continue;
+    let f=0.8+r()*0.3;if(dy>0.3)f*=0.82;if(dy<-0.4&&dx<0.1)f*=1.12;
+    px(x,y,shade(L[Math.floor(r()*L.length)],f));
+  }
+  const t=new THREE.CanvasTexture(cv);
+  t.magFilter=THREE.NearestFilter;t.minFilter=THREE.NearestFilter;t.generateMipmaps=false;
+  return sapTex[id]=t;
+}
+const sapMat=new THREE.MeshLambertMaterial({map:saplingTexture(speciesKey,SAP_H),transparent:true,alphaTest:0.5,side:THREE.DoubleSide});
+const sapling=new THREE.Group();
+for(const ry of [Math.PI/4,-Math.PI/4]){const m=new THREE.Mesh(new THREE.PlaneGeometry(1,1),sapMat);m.rotation.y=ry;sapling.add(m);}
+sapling.visible=false;
+scene.add(sapling);
+
+/* ---------- Construcción de mallas ---------- */
+const toC=a=>a.map(h=>new THREE.Color(h));
+let visTop=0;
+function hr(x,y,z,s){let h=Math.imul(x+1013,374761393)^Math.imul(y+7919,668265263)^Math.imul(z+104729,2147483647)^Math.imul(s,40503);
+  h=Math.imul(h^h>>>13,1274126177);h^=h>>>16;return(h>>>0)/4294967296;}
+
+function rebuild(){
+  // Altura mínima = plántula, lo que se planta antes de que exista el árbol más joven
+  if(P.height<3){
+    sapMat.map=saplingTexture(speciesKey,SAP_H);
+    sapling.visible=true;logMesh.count=0;leafMesh.count=0;visTop=1;
+    document.getElementById('stats').textContent='Plántula: sprite de 16 × 16 px sobre 1 bloque. Sube la altura para ver el árbol joven.';
+    return;
+  }
+  sapling.visible=false;
+  const vox=generateTree(P,seed);
+  const sp=SPECIES[speciesKey];
+  const bark=toC(sp.bark),leaves=toC(sp.leaves),vines=toC(sp.vines||sp.leaves),marks=sp.marks?new THREE.Color(sp.marks):null;
+  const sd=seed*3, has=(x,y,z)=>vox.has(K(x,y,z));
+  let li=0,fi=0,nLog=0,nLeaf=0,top=0;
+  for(const o of vox.values()){
+    const {x,y,z,t}=o;
+    if(t===0)nLog++;else nLeaf++;
+    if(t!==2&&y>top)top=y;
+    const n=(has(x+1,y,z)?1:0)+(has(x-1,y,z)?1:0)+(has(x,y+1,z)?1:0)+(has(x,y-1,z)?1:0)+(has(x,y,z+1)?1:0)+(has(x,y,z-1)?1:0);
+    if(n===6)continue;
+    dummy.position.set(x,y,z);dummy.updateMatrix();
+    const r1=hr(x,y,z,sd+1),r2=hr(x,y,z,sd+2),r3=hr(x,y,z,sd+3);
+    if(t===0){
+      if(li>=CAP.log)continue;
+      if(marks&&r3<0.14)tmp.copy(marks);else tmp.copy(bark[Math.floor(r1*bark.length)]);
+      tmp.multiplyScalar((1-0.04*n)*(0.93+r2*0.1));
+      logMesh.setMatrixAt(li,dummy.matrix);logMesh.setColorAt(li,tmp);li++;
+    }else{
+      if(fi>=CAP.leaf)continue;
+      const pal=t===2?vines:leaves;
+      tmp.copy(pal[Math.floor(r1*pal.length)]).multiplyScalar((1-0.09*n)*(0.9+r2*0.14));
+      leafMesh.setMatrixAt(fi,dummy.matrix);leafMesh.setColorAt(fi,tmp);fi++;
+    }
+  }
+  logMesh.count=li;leafMesh.count=fi;
+  for(const m of [logMesh,leafMesh]){m.instanceMatrix.needsUpdate=true;m.instanceColor.needsUpdate=true;}
+  visTop=top+1;
+  document.getElementById('stats').textContent=
+    `${nLog.toLocaleString('es')} bloques de madera · ${nLeaf.toLocaleString('es')} de hojas · ${visTop} de alto`;
+}
+let queued=false;
+function schedule(){ if(queued)return; queued=true; requestAnimationFrame(()=>{queued=false;rebuild();}); }
+
+/* ---------- Cámara orbital (sigue al árbol mientras crece) ---------- */
+const target=new THREE.Vector3(0,9,0);
+let theta=0.8,phi=1.25,dist=52,autoSpin=true,userZoom=1;
+function placeCamera(){
+  phi=Math.max(0.12,Math.min(Math.PI*0.52,phi));
+  dist=Math.max(4,Math.min(260,dist));
+  camera.position.set(
+    target.x+dist*Math.sin(phi)*Math.sin(theta),
+    target.y+dist*Math.cos(phi),
+    target.z+dist*Math.sin(phi)*Math.cos(theta));
+  camera.lookAt(target);
+}
+const wantTY=()=>Math.max(0.5,visTop*0.45);
+const wantDist=()=>Math.max(6,visTop*2.3+10)*userZoom;
+function frameTree(){ userZoom=1; }
+function snapCamera(){ target.y=wantTY(); dist=wantDist(); }
+const ptrs=new Map();let pinch=0;
+canvas.addEventListener('pointerdown',e=>{canvas.setPointerCapture(e.pointerId);ptrs.set(e.pointerId,{x:e.clientX,y:e.clientY});
+  if(ptrs.size===2){const [a,b]=[...ptrs.values()];pinch=Math.hypot(a.x-b.x,a.y-b.y);}});
+canvas.addEventListener('pointermove',e=>{
+  const p=ptrs.get(e.pointerId);if(!p)return;
+  const dx=e.clientX-p.x,dy=e.clientY-p.y;p.x=e.clientX;p.y=e.clientY;
+  if(ptrs.size===1){theta-=dx*0.0085;phi-=dy*0.0085;}
+  else if(ptrs.size===2){const [a,b]=[...ptrs.values()];const d=Math.hypot(a.x-b.x,a.y-b.y);
+    userZoom=Math.max(0.15,Math.min(4,userZoom*pinch/d));pinch=d;}
+});
+const endPtr=e=>{ptrs.delete(e.pointerId);};
+canvas.addEventListener('pointerup',endPtr);canvas.addEventListener('pointercancel',endPtr);
+canvas.addEventListener('wheel',e=>{e.preventDefault();userZoom=Math.max(0.15,Math.min(4,userZoom*Math.exp(e.deltaY*0.0012)));},{passive:false});
+
+function resize(){
+  const w=canvas.clientWidth,h=canvas.clientHeight,dpr=Math.min(window.devicePixelRatio||1,2);
+  renderer.setPixelRatio(dpr);renderer.setSize(w,h,false);
+  camera.aspect=w/Math.max(1,h);camera.updateProjectionMatrix();
+}
+new ResizeObserver(resize).observe(canvas);
+function loop(){
+  if(autoSpin&&ptrs.size===0)theta+=0.003;
+  target.y+=(wantTY()-target.y)*0.08;dist+=(wantDist()-dist)*0.08;
+  placeCamera();renderer.render(scene,camera);requestAnimationFrame(loop);
+}
+
+/* ---------- Interfaz ---------- */
+const slidersEl=document.getElementById('sliders');
+const inputs={};
+for(const s of SLIDERS){
+  const wrap=document.createElement('div');wrap.className='slider';
+  wrap.innerHTML=`<div class="top"><label for="s_${s.k}">${s.label}</label><output id="o_${s.k}"></output></div>
+    <input type="range" id="s_${s.k}" min="${s.min}" max="${s.max}" step="${s.step}">`;
+  slidersEl.appendChild(wrap);
+  const inp=wrap.querySelector('input');inputs[s.k]=inp;
+  inp.addEventListener('input',()=>{P[s.k]=parseFloat(inp.value);showVal(s);schedule();});
+}
+function fmt(s,v){if(s.k==='height'&&v<3)return 'plántula'; return (Number.isInteger(s.step)?v:v.toFixed(s.step<0.1?2:1))+(s.u||'');}
+function showVal(s){document.getElementById('o_'+s.k).textContent=fmt(s,P[s.k]);}
+function syncSliders(){for(const s of SLIDERS){inputs[s.k].value=P[s.k];showVal(s);}}
+
+const chipsEl=document.getElementById('chips');
+function renderChips(){
+  chipsEl.innerHTML='';
+  for(const [k,sp] of Object.entries(SPECIES)){
+    const b=document.createElement('button');b.type='button';b.className='chip';b.textContent=sp.name;
+    b.setAttribute('aria-pressed',k===speciesKey);
+    b.addEventListener('click',()=>{speciesKey=k;applySpecies();});
+    chipsEl.appendChild(b);
+  }
+}
+function applySpecies(){
+  P=makeP(speciesKey);
+  renderChips();syncSliders();frameTree();paintGround();rebuild();snapCamera();
+}
+const seedEl=document.getElementById('seed');
+seedEl.addEventListener('input',()=>{seed=parseInt(seedEl.value,10)||0;schedule();});
+document.getElementById('dice').addEventListener('click',()=>{
+  seed=Math.floor(Math.random()*99999);seedEl.value=seed;rebuild();});
+document.getElementById('reset').addEventListener('click',applySpecies);
+document.getElementById('leaves').addEventListener('change',e=>{leafMesh.visible=e.target.checked;});
+document.getElementById('shadows').addEventListener('change',e=>{
+  renderer.shadowMap.enabled=e.target.checked;
+  for(const m of [logMesh,leafMesh,groundMesh])m.material.needsUpdate=true;});
+document.getElementById('spin').addEventListener('change',e=>{autoSpin=e.target.checked;});
+
+const panel=document.getElementById('panel'),toggle=document.getElementById('toggle');
+function setPanel(open){panel.hidden=!open;toggle.setAttribute('aria-expanded',open);toggle.textContent=open?'Ocultar':'Ajustes';}
+toggle.addEventListener('click',()=>setPanel(panel.hidden));
+setPanel(!window.matchMedia('(max-width:700px)').matches);
+
+renderChips();syncSliders();frameTree();paintGround();resize();rebuild();snapCamera();requestAnimationFrame(loop);
+</script>
+</body>
+</html>

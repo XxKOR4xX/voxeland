@@ -744,5 +744,124 @@ const proy = new Function(proySrc + "\nreturn proyectarHud")()
 	ok(hsize >= 48 / 5 - 1e-9, `el corazon a 6 bloques supera el minimo (${Math.round(hsize)}px >= 10px)`)
 }
 
+// --- Guardar/Abrir libros en archivo local (.json) ---------------------
+{
+	// Bloque puro de game.js (desde LIBRO_FORMATO hasta el marcador): solo
+	// depende de las tablas de items, que se inyectan como parametros
+	// (mismo truco que pixelesPorBloque mas arriba).
+	const libroSrc = src.slice(src.indexOf("const LIBRO_FORMATO"), src.indexOf("[libro:fin-puras]"))
+	ok(libroSrc.includes('const LIBRO_FORMATO = "voxeland.libro"'), "archivo de libro: formato declarado")
+	ok(/function serializarLibro/.test(libroSrc) && /function sanitizarLibro/.test(libroSrc),
+		"archivo de libro: serializar/sanitizar dentro del bloque puro")
+	const BT = ["azul", "marron", "verde", "rojo", "morado"]
+	const BP = ["pergamino", "marfil", "crema"]
+	const IB = 1024 + 7
+	const items = {}
+	for (let ti = 0; ti < BT.length; ti++) {
+		for (let pi = 0; pi < BP.length; pi++) {
+			items[IB + ti * BP.length + pi] = { name: "Libro", book: true, pages: 16, tono: BT[ti], papel: BP[pi] }
+		}
+	}
+	const lib = new Function("BOOK_TONOS", "BOOK_PAPELES", "ITEM_BOOK", "ITEMS", "version",
+		libroSrc + "\nreturn { serializarLibro, sanitizarLibro }")(BT, BP, IB, items, "0.1 Alpha")
+
+	// round trip: slot completo -> archivo -> slot identico
+	const slot1 = {
+		state: IB + 3 * 3 + 2, count: 1, title: "Cronicas de VOXELAND",
+		text: ["Pagina 1", "Pagina 2"], signed: true, signDate: 1750000000000,
+		chapters: [4, -1, 10, -1], chapNames: ["Inicio", "", "Final", ""],
+		fontSize: 12, coverFontSize: 15
+	}
+	const archivo = lib.serializarLibro(slot1)
+	ok(archivo.format === "voxeland.libro" && archivo.v === 1, "serializar: formato + version del archivo")
+	ok(archivo.libro.tono === "rojo" && archivo.libro.papel === "crema", "serializar: tono/papel del item en el archivo")
+	const slot2 = lib.sanitizarLibro(archivo)
+	ok(slot2 && slot2.state === slot1.state && slot2.count === 1, "round trip: mismo id de item y count 1")
+	ok(slot2.title === slot1.title && slot2.signed === true && slot2.signDate === slot1.signDate,
+		"round trip: titulo y firma")
+	ok(JSON.stringify(slot2.text) === JSON.stringify(slot1.text.concat(Array(14).fill(""))),
+		"round trip: text viaja y se rellena a 16 paginas")
+	ok(JSON.stringify(slot2.chapters) === JSON.stringify(slot1.chapters)
+		&& JSON.stringify(slot2.chapNames) === JSON.stringify(slot1.chapNames),
+		"round trip: capitulos y sus nombres")
+	ok(slot2.fontSize === 12 && slot2.coverFontSize === 15, "round trip: tamanos de letra")
+
+	// tolerancia entre versiones: tono/papel que aun no existen -> state
+	// guardado; sin nada valido -> ITEM_BOOK historico
+	ok(lib.sanitizarLibro({ libro: { tono: "dorado", papel: "seda", state: slot1.state, title: "futuro", text: ["hola"] } }).state === slot1.state,
+		"tolerancia: tono/papel desconocidos caen al state guardado")
+	ok(lib.sanitizarLibro({ libro: { tono: "dorado", papel: "seda", state: 55555, text: [] } }).state === IB,
+		"tolerancia: sin tono ni state validos cae al ITEM_BOOK historico")
+
+	// archivo sucio/antiguo: todo al rango actual
+	const sucio = lib.sanitizarLibro({ libro: {
+		title: "x".repeat(50), text: ["y".repeat(300)],
+		chapters: [999, 2.7, "3", null], chapNames: ["n".repeat(30)],
+		fontSize: 99, coverFontSize: 1, signed: "si"
+	} })
+	ok(sucio.title.length === 32, "sanitizar: titulo recortado a 32")
+	ok(sucio.text.length === 16 && sucio.text[0].length === 256,
+		"sanitizar: paginas recortadas a 256 y rellenadas a 16")
+	ok(JSON.stringify(sucio.chapters) === JSON.stringify([14, 2, 2, -1]),
+		"sanitizar: capitulos con clamp, pares y -1 en el hueco")
+	ok(sucio.chapNames[0].length === 14 && sucio.fontSize === 24 && sucio.coverFontSize === 10 && sucio.signed === true,
+		"sanitizar: nombre de capitulo, tamanos de letra y firma")
+	ok(lib.sanitizarLibro(null) === null && lib.sanitizarLibro({ format: "voxeland.libro" }) === null
+		&& lib.sanitizarLibro({ libro: "texto" }) === null, "sanitizar: lo que no es un libro -> null")
+
+	// integracion en el juego: input, boton de export en la escena,
+	// descarga real y hueco + save() al importar
+	ok(/<input type="file" id="librofile"/.test(htmlSrc) && /accept="\.json/.test(htmlSrc),
+		"input #librofile type=file que acepta .json en index.html")
+	ok(/getElementById\("librofile"\)/.test(src) && /librofile\.addEventListener\("change"/.test(src),
+		"game.js engancha #librofile y reacciona a change")
+	ok(/drawBookTabs\(L\)\r?\n\t\tdrawBookSave\(L\)/.test(src), "drawBook pinta el boton Guardar (pie del libro)")
+	ok(/URL\.createObjectURL/.test(src) && /revokeObjectURL/.test(src) && /\.download = nombreArchivoLibro/.test(src),
+		"exportarLibro descarga via Blob + <a download> y libera el objectURL")
+	const expSrc = src.slice(src.indexOf("function exportarLibro"), src.indexOf("function importarTextoLibro"))
+	ok(/flushBookAll\(\)/.test(expSrc), "exportarLibro flusha el texto al slot antes de leerlo")
+	const impSrc = src.slice(src.indexOf("function importarTextoLibro"), src.indexOf("function importarLibroArchivo"))
+	ok(/inventory\.hotbar/.test(impSrc) && /inventory\.main/.test(impSrc) && /save\(\)/.test(impSrc),
+		"importar: hueco (hotbar->main) y save() al terminar")
+	ok(/"pause", importarLibroArchivo/.test(src), "boton Importar libro en el menu pause")
+	ok(/game\.js\?v=20261007/.test(htmlSrc), "cache-buster de game.js actualizado")
+
+	// disposicion del widget: pestañas alineadas con la X, -> anclada al
+	// centro del libro cerrado (no salta al abrir) y Guardar en el pie
+	const tabsSrc = src.slice(src.indexOf("function bookCloseInset"), src.indexOf("function rightClickBookChapter"))
+	ok(/const x0 = L\.sx \+ L\.sw - bookCloseInset\(L\) - total/.test(tabsSrc),
+		"el borde derecho de las pestañas se alinea con el de la X (misma formula del inset)")
+	ok(/const inset = bookCloseInset\(L\)/.test(src), "drawBookClose usa el helper compartido del inset")
+	const mkTabs = new Function(tabsSrc + "\nreturn { bookTabsLayout, bookCloseInset }")()
+	{
+		const Lp = { bx: 434, bw: 832, sx: 610, sw: 656, tabS: 30, by: 238, tabsH: 36 }
+		const t = mkTabs.bookTabsLayout(Lp)
+		const total = t.portW + 4 * t.th + 4 * t.gap
+		ok(t.x0 + total === Lp.sx + Lp.sw - mkTabs.bookCloseInset(Lp),
+			"la fila de pestañas termina justo en el borde derecho de la X")
+	}
+	const layoutSrc = src.slice(src.indexOf("function bookLayout"), src.indexOf("function drawBook()"))
+	ok(/function bookCoverCenterX/.test(layoutSrc), "bookCoverCenterX junto a bookLayout (bloque extraible)")
+	const mk = new Function("width", "height", "BOOK_BOX", "bookView",
+		layoutSrc + "\nreturn { bookLayout, bookCoverCenterX }")
+	const BB = { w: 0.65, h: 0.65, margin: 14, tabs: 36, foot: 40 }
+	const mkCover = mk(1280, 720, BB, "cover")
+	const mkPages = mk(1280, 720, BB, "pages")
+	const Lc = mkCover.bookLayout()
+	const Lp = mkPages.bookLayout()
+	ok(Math.abs(Lc.sx + Lc.sw / 2 - mkCover.bookCoverCenterX(Lc)) < 1e-9,
+		"la -> de la portada vive en el centro del libro cerrado")
+	ok(mkPages.bookCoverCenterX(Lp) === mkCover.bookCoverCenterX(Lc),
+		"la -> no salta al abrir el libro (misma coordenada en hojas)")
+	const footSrc = src.slice(src.indexOf("function drawBookFoot"), src.indexOf("function drawBookClose"))
+	ok(/const nextX = Math\.round\(bookCoverCenterX\(L\) - nw \/ 2\)/.test(footSrc),
+		"en hojas la -> se ancla a bookCoverCenterX y la < aparece a su lado")
+	ok(/const x = Math\.round\(bookCoverCenterX\(L\) - nw \/ 2\)/.test(footSrc),
+		"en portada la -> se ancla a bookCoverCenterX")
+	const saveSrc = src.slice(src.indexOf("function drawBookSave"), src.indexOf("// Selector de archivos"))
+	ok(/L\.sx \+ L\.sw - 4/.test(saveSrc) && /y: L\.footY, w: tw \+ 14, h: L\.footH/.test(saveSrc),
+		"el boton Guardar vive en el pie, pegado a la esquina inferior derecha")
+}
+
 console.log(fails ? `\n${fails} FALLOS` : "\ntodo OK")
 process.exit(fails ? 1 : 0)

@@ -24,6 +24,9 @@
 	const HIDRATACION_RIEGO = 60       // % por segundo bebiendo (una visita llena)
 	const HIDRATACION_DESGASTE = 0.9   // % por segundo
 	const RADIO_AGUA = 48               // radio de busca de agua (sin agua cerca, hasta el lago)
+	const RADIO_GRAMA = 48              // radio de busca de gramilla: pastoreo a distancia
+	                                    // (la vaca va a por la hierba aunque este lejos; el
+	                                    // viaje lo alarga el temporizador al marcarla)
 	// Distancia a la que acaba el bloque OBJETIVO cuando la vaca se
 	// planta a comer/beber, medida del glb (boca z 1,61 u * escala 0,36
 	// = 0,58 en el bocado; 0,61-0,69 en el trago).  El bloque debe quedar
@@ -694,6 +697,14 @@ void main() {
 			cimaIntentos: 0,           // aterrizajes sin progresar (tope de saltos)
 			distIntento: Infinity,     // ultima distancia ganada (0,75) al objetivo
 			arrimo: null,              // {x,z} deslizamiento hasta el bloque de la boca
+			ruta: null,                // ruta A* en columnas hacia el objetivo marcado
+			rutaDest: null,            // {x,z} objetivo de la ruta activa
+			rutaT: 0,                  // ms para re-evaluar la ruta de columnas
+			bloqueoDirecto: 0,         // ms con el rumbo directo tapado (escala al A*)
+			pasoRuta: 0,               // ticks desde el ultimo chequeo anti-atasco
+			lxRuta: 0, lzRuta: 0,      // posicion del ultimo chequeo anti-atasco
+			avoidRuta: null,           // Map nodo -> ms vetado (atasco: probar otro lado)
+			vetoAgua: null,            // Map orilla -> ms vetada (inalcanzable)
 		}
 		e.encabObj = e.encab
 		entidades.push(e)
@@ -898,8 +909,12 @@ void main() {
 		if (!abajo) {
 			// Bajada de UN bloque: suelo solido un nivel mas abajo y el
 			// cuerpo libre; la gravedad la aterriza.  De 2+ sigue siendo
-			// barranco (el guardia de antes).
-			return !solido(world.getBlock(x, suelo - 1, z)) ? false : !enCuerpo
+			// barranco (el guardia de antes).  Un fondo de PIEDRA no
+			// cuenta: es la boca de una cueva y no se pisa
+			const b1 = world.getBlock(x, suelo - 1, z)
+			if (!solido(b1)) return false
+			if (!fondoPisa(b1)) return false
+			return !enCuerpo
 		}
 		if (enCuerpo) {
 			// Escalon de 1 bloque: NO es transitable andando.  El motor
@@ -910,6 +925,10 @@ void main() {
 			// empujones hasta olvidar el objetivo en vez de saltarlo).
 			return false
 		}
+		// llano: el suelo de PIEDRA tampoco se pisa (misma razon: si lo
+		// dejara pasar, un tunel a ras cortaria el paseo sin que nadie
+		// lo pidiera)
+		if (!fondoPisa(world.getBlock(x, suelo, z))) return false
 		return !solido(world.getBlock(x, techo, z))
 	}
 
@@ -968,15 +987,16 @@ void main() {
 		return null
 	}
 
-	// La mata transitable mas cercana en un radio de 9 bloques (pastoreo).
-	// Barre con ch.tops[] como buscarSuelo(): el suelo real de la columna,
-	// que es donde el generador pudo poner gramilla.
+	// La mata transitable mas cercana en un radio de RADIO_GRAMA bloques
+	// (pastoreo a distancia).  Barre con ch.tops[] como buscarSuelo():
+	// el suelo real de la columna, que es donde el generador pudo poner
+	// gramilla.
 	function buscarGrama(e) {
 		const V = window.VXL
 		const world = V.world
 		const cx = Math.round(e.x)
 		const cz = Math.round(e.z)
-		const radio = 9
+		const radio = RADIO_GRAMA
 		let mejor = null
 		let mejorD = Infinity
 		for (let dz = -radio; dz <= radio; dz++) {
@@ -1010,48 +1030,111 @@ void main() {
 		return mejor
 	}
 
-	// La columna de agua mas cercana en un radio de RADIO_AGUA
-	// (hidratacion).  La vaca no puede pisar el agua (delante() la
-	// rechaza), asi que el objetivo es la orilla: al llegar, aguaCerca()
-	// dispara la bebida.
+	// La columna de agua mas cercana ALCANZABLE (hidratacion).  El radio
+	// de RADIO_AGUA es el OLfATO, pero antes de poner rumbo se comprueba
+	// que la orilla se puede PISAR y que el agua queda a la altura de la
+	// boca desde ella: la orilla inalcanzable --al otro lado del
+	// barranco, en el fondo de un pozo, detras del muro-- no se marca.
+	// Marcarla era el acoso eterno: clavarse contra el obstaculo, fallo,
+	// re-marcar la misma columna, fallo...  Cada orilla rechazada queda
+	// VETADA un rato: el proximo escaneo prueba otra zona y la orilla
+	// buena acaba saliendo aunque tenga mals delante.
 	function buscarAgua(e) {
 		const V = window.VXL
 		const world = V.world
 		const cx = Math.round(e.x)
 		const cz = Math.round(e.z)
-		let mejor = null
-		let mejorD = Infinity
+		const cache = new Map()
+		// candidatos: hasta 6 columnas de agua cercanas y sin vetar
+		const cand = []
+		let peorD2 = Infinity
 		for (let dz = -RADIO_AGUA; dz <= RADIO_AGUA; dz++) {
 			for (let dx = -RADIO_AGUA; dx <= RADIO_AGUA; dx++) {
 				const d2 = dx * dx + dz * dz
-				if (d2 === 0 || d2 > RADIO_AGUA * RADIO_AGUA || d2 >= mejorD) continue
+				if (d2 === 0 || d2 > RADIO_AGUA * RADIO_AGUA || d2 >= peorD2) continue
 				const x = cx + dx
 				const z = cz + dz
 				const ch = world.chunks[x >> 4] && world.chunks[x >> 4][z >> 4]
 				if (!ch || !ch.tops) continue
+				if (e.vetoAgua && (e.vetoAgua.get(x * 65536 + z) || 0) > 0) continue
 				const top = ch.tops[(z & 15) * 16 + (x & 15)]
 				// el agua vive alrededor del nivel del terreno de la columna
+				let agua = false
 				for (let y = top - 4; y <= top + 6; y++) {
 					if ((world.getBlock(x, y, z) & 0xff) === V.blockIds.waterBlock) {
-						mejor = { x: x, z: z }
-						mejorD = d2
+						agua = true
 						break
 					}
 				}
+				if (!agua) continue
+				let pos = cand.length
+				while (pos > 0 && cand[pos - 1].d > d2) pos--
+				if (pos >= 6) continue
+				cand.splice(pos, 0, { x: x, z: z, d: d2 })
+				if (cand.length > 6) cand.pop()
+				peorD2 = cand.length >= 6 ? cand[5].d : Infinity
 			}
 		}
-		return mejor
+		// validar en orden de cercania; el primer alcanzable manda
+		for (let i = 0; i < cand.length && i < 5; i++) {
+			const W = cand[i]
+			if (!orillaAlcanzable(e, W, cache)) {
+				if (!e.vetoAgua) e.vetoAgua = new Map()
+				e.vetoAgua.set(W.x * 65536 + W.z, 20000)
+				continue
+			}
+			return W
+		}
+		return null
+	}
+
+	// ¿El agua de la columna W se puede BEBER desde la orilla a la que
+	// la vaca sabe llegar?  La ruta de columnas (el mismo A* del viaje)
+	// tiene que acabar pegada a W, con el agua dentro de la ventana de
+	// bebida desde esa orilla.  Ya al lado cuenta como alcanzable si el
+	// agua le llega a la boca donde esta.
+	function orillaAlcanzable(e, W, cache) {
+		const V = window.VXL
+		const world = V.world
+		const waterId = V.blockIds.waterBlock
+		const cx = Math.round(e.x)
+		const cz = Math.round(e.z)
+		const vista = (x, z, h) => {
+			for (let y = h - ventanaAgua(e); y <= h + 2; y++) {
+				if ((world.getBlock(x, y, z) & 0xff) === waterId) return true
+			}
+			return false
+		}
+		if (Math.max(Math.abs(cx - W.x), Math.abs(cz - W.z)) <= 1) {
+			const h0 = colRuta(e, cx, cz, cache)
+			if (h0 !== null && vista(W.x, W.z, h0)) return true
+		}
+		const ruta = buscarRuta(e, W.x, W.z)
+		if (!ruta || !ruta.length) return false
+		const fin = ruta[ruta.length - 1]
+		if (Math.max(Math.abs(fin.x - W.x), Math.abs(fin.z - W.z)) > 1) return false
+		const hB = colRuta(e, fin.x, fin.z, cache)
+		return hB !== null && vista(W.x, W.z, hB)
+	}
+
+	// Ventana vertical de bebida: desde cuantos bloques BAJO el apoyo se
+	// ve el agua que se puede beber.  Sobre un ARBOL (copa o arbusto de
+	// hojas) la ventana se aprieta a un nivel: el agua se toma A RAS de
+	// suelo, no desde arriba --la copa sobre un lago no ve la
+	// superficie-- pero el arbusto que crece EN la orilla esta a nivel
+	// del charco y si puede beberse desde encima
+	function ventanaAgua(e) {
+		return enArbol(e) ? 1 : 3
 	}
 
 	// ¿Agua a alcance para beber?  Devuelve la COLUMNA de agua mas
 	// cercana ({x, z}) o null: en la propia columna o en alguna de las
 	// 8 vecinas (DIAGONALES incluidas: la vaca se para en cuanto el
 	// lookahead de 0,8 toca el agua, y desde un enfoque diagonal esa
-	// casilla queda en diagonal de la suya).  Se mira desde TRES bloques
-	// por debajo de los pies hasta la cabeza: asi se bebe desde el filo
-	// de un desnivel de 2 (o desde la meseta sobre un lago) sin meterse
-	// en el agua, que hayDescenso rechaza a proposito.  Ese margen de 3
-	// tambien cubre las charcas de un bloque hundidas respecto a la orilla.
+	// casilla queda en diagonal de la suya).  Se mira desde la ventana
+	// de bebida por debajo de los pies hasta la cabeza: asi se bebe
+	// desde el filo de un desnivel de 2 (o desde la meseta sobre un
+	// lago) sin meterse en el agua, que hayDescenso rechaza a proposito.
 	// Prefiere columna VECINA (para poder apuntarla: el agua solo bajo
 	// los pies es respaldo, sin rumbo util que darle).
 	function aguaCerca(e) {
@@ -1068,7 +1151,7 @@ void main() {
 		for (let dz = -1; dz <= 1; dz++) {
 			for (let dx = -1; dx <= 1; dx++) {
 				const d2 = dx * dx + dz * dz
-				for (let y = suelo - 3; y <= techo; y++) {
+				for (let y = suelo - ventanaAgua(e); y <= techo; y++) {
 					if ((world.getBlock(cx + dx, y, cz + dz) & 0xff) === V.blockIds.waterBlock) {
 						if (d2 === 0) propia = true
 						else if (d2 < mejorD) {
@@ -1153,6 +1236,9 @@ void main() {
 			if ((b & 0xff) === V.blockIds.waterBlock || esLava(b)) return false
 		}
 		if (!solido(world.getBlock(x, suelo + 1, z))) return false
+		// no se salta a la PIEDRA: las cuevas y sus bordes son de
+		// piedra; el cesped de la superficie no esta alla arriba
+		if (!fondoPisa(world.getBlock(x, suelo + 1, z))) return false
 		if (!solido(world.getBlock(x, suelo + 2, z))) {
 			// 1 de alto: dos bloques de aire encima para el cuerpo
 			return !solido(world.getBlock(x, suelo + 3, z)) ? 1 : false
@@ -1164,7 +1250,9 @@ void main() {
 	}
 
 	// Delante hay un desnivel de 2+ con suelo seco a poca distancia (para
-	// poder saltarlo desde la cima; si no hay fondo o hay agua, no).
+	// poder saltarlo desde la cima; si no hay fondo o hay agua, no).  El
+	// fondo de PIEDRA no cuenta: es la boca de una cueva y las cuevas
+	// no se saltan --el campo quiere el cesped de la superficie
 	function hayDescenso(e, a) {
 		const V = window.VXL
 		const world = V.world
@@ -1177,20 +1265,393 @@ void main() {
 		for (let y = suelo - 1; y >= suelo - 4; y--) {
 			const b = world.getBlock(x, y, z)
 			if ((b & 0xff) === V.blockIds.waterBlock || esLava(b)) return false
-			if (solido(b)) { fondo = true; break }
+			if (solido(b)) { fondo = fondoPisa(b); break }
 		}
 		return fondo
 	}
 
-	// La direccion transitable mas cercana al objetivo: primero las rectas
-	// a 90 grados, luego las diagonales.  null si no hay ninguna.
-	function elegirRodeo(e, directo) {
-		const offs = [Math.PI / 2, -Math.PI / 2, Math.PI * 0.75, -Math.PI * 0.75]
+	// ¿Los pies apoyados en un ARBOL (copa de hojas o tronco)?  Decide el
+	// ID del bloque de apoyo (floor de los pies - 0,5).  Se miran las
+	// columnas que toca el CUERPO (no solo la del centro): en el filo de
+	// la copa round(x) ya apunta al aire mientras el cuerpo aun pisa la
+	// hoja y, sin ese margen, la bajada se cortaria a media arista.
+	// Los ids se leen de blockIds: el juego real los tiene todos y un
+	// mock sin ellos queda con el set vacio, o sea sin bajada especial.
+	let arbolIds = null
+	function enArbol(e) {
+		const V = window.VXL
+		if (!arbolIds) {
+			arbolIds = new Set()
+			const ids = V.blockIds || {}
+			for (const n of ["oakLog", "birchLog", "acaciaLog", "darkOakLog",
+					"jungleLog", "spruceLog", "leaves", "birchLeaves",
+					"blossomLeaves", "justLeaves", "altLeaves", "grassLeaves"]) {
+				if (typeof ids[n] === "number") arbolIds.add(ids[n])
+			}
+		}
+		const apoyo = Math.floor(e.y - e.bottomH - 0.5)
+		const xs = [Math.round(e.x - e.w), Math.round(e.x), Math.round(e.x + e.w)]
+		const zs = [Math.round(e.z - e.w), Math.round(e.z), Math.round(e.z + e.w)]
+		for (const x of xs) for (const z of zs) {
+			if (arbolIds.has(V.world.getBlock(x, apoyo, z) & 0xff)) return true
+		}
+		return false
+	}
+
+	// Bajada de arbol: ¿hay una caida SECA en la direccion a (aire a los
+	// pies y un nivel mas, fondo seco a <= 12 y sin agua ni lava en la
+	// columna)?  El fondo de piedra tampoco vale (cueva bajo el arbol).
+	// Si, ademas, enArbol() confirma el apoyo, el MOVIMIENTO
+	// deja cruzar la caida (delante() frena los barrancos de 2+ para
+	// todo lo demas) y la gravedad baja a la vaca andando.  El limite de
+	// 12 solo se usa aqui: hayDescenso sigue mirando suelo-4 para el
+	// suelo normal (el pozo inalcanzable del test 10 depende de ese -4).
+	function esCaidaSeca(e, a) {
+		const V = window.VXL
+		const world = V.world
+		const suelo = Math.floor(e.y - e.bottomH - 0.5)
+		const x = Math.round(e.x - Math.sin(a) * 0.8)
+		const z = Math.round(e.z + Math.cos(a) * 0.8)
+		if (solido(world.getBlock(x, suelo, z))) return false
+		if (solido(world.getBlock(x, suelo - 1, z))) return false
+		for (let y = suelo - 1; y >= suelo - 12; y--) {
+			const b = world.getBlock(x, y, z)
+			if ((b & 0xff) === V.blockIds.waterBlock || esLava(b)) return false
+			if (solido(b)) return fondoPisa(b)
+		}
+		return false
+	}
+
+	// Puntuacion de una direccion del abanico: 0 = cerrada, 1 = cabe un
+	// paso, 2 = ademas aguanta la sonda profunda de 1,7 (evita los
+	// callejones sin salida: no basta con que quepa un medio paso).
+	// Sobre un arbol cuenta ademas la caida seca (el movimiento la
+	// cruza): sin eso el abanico solo veria la copa y la vaca se
+	// quedaria girando arriba cuando la salida lateral si es buena.
+	function puntuaRuta(e, a) {
+		if (transitable(e, a)) return delante(e, -Math.sin(a) * 1.7, Math.cos(a) * 1.7) ? 2 : 1
+		if (enArbol(e) && esCaidaSeca(e, a)) return 1
+		return 0
+	}
+
+	// Abanico de rutas: las direcciones ordenadas por DESVIACION minima
+	// respecto al objetivo (recta, 30, 60, 90, 120 y la diagonal de 135),
+	// puntuadas con puntuaRuta().  El ">" estricto se lo da la menor
+	// desviacion (se recorre en ese orden), asi que en empates gana la
+	// que menos se aparta del objetivo.  null si no hay ninguna abierta.
+	function elegirRuta(e, directo) {
+		const offs = [0,
+			Math.PI / 6, -Math.PI / 6,
+			Math.PI / 3, -Math.PI / 3,
+			Math.PI / 2, -Math.PI / 2,
+			Math.PI * 2 / 3, -Math.PI * 2 / 3,
+			Math.PI * 0.75, -Math.PI * 0.75]
+		let mejor = null
+		let mejorScore = 0
 		for (let i = 0; i < offs.length; i++) {
 			const a = directo + offs[i]
-			if (transitable(e, a)) return a
+			const s = puntuaRuta(e, a)
+			if (s > mejorScore) {
+				mejor = a
+				mejorScore = s
+			}
 		}
-		return null
+		return mejor
+	}
+
+	// ------------------------------------------------- ruta A* ----
+	// Pisos que las entidades de campo quieren y evitan: el CESPED es
+	// su casa (pararse encima, pastorear) y la PIEDRA muerde --las
+	// cuevas son de piedra, y entrar en ellas es perderse.  La columna
+	// de piedra la VETA pasoRuta (el A* no la incluye nunca); el malus
+	// de aqui es la red por si alguna ruta se colara por otro lado
+	let piedraIds = null
+	let cespedId = -1
+	function initPisos() {
+		if (piedraIds === null) {
+			piedraIds = new Set()
+			const ids = window.VXL.blockIds || {}
+			for (const n of ["stone", "cobblestone", "mossyCobble", "stoneBricks",
+					"mossyStoneBricks", "crackedStoneBrick", "chiseledStoneBricks",
+					"smoothStone", "sandStone", "smoothSandStone", "chiseledSandStone",
+					"bedrock", "gravel", "netherrack", "netherBricks", "coalOre",
+					"ironOre", "goldOre", "diamondOre", "redstoneOre", "lapisOre",
+					"emeraldOre", "coalBlock"]) {
+				if (typeof ids[n] === "number") piedraIds.add(ids[n])
+			}
+			if (typeof ids.grass === "number") cespedId = ids.grass
+		}
+	}
+
+	// ¿El fondo de una bajada es pisable para el campo?  La piedra
+	// muerde: las cuevas son de piedra y a sus bocas no se salta ni se
+	// cae --el cesped de la superficie no esta alla abajo
+	function fondoPisa(b) {
+		initPisos()
+		return !piedraIds.has(b & 0xff)
+	}
+
+	// Coste extra de pisar la columna (x,z) cuyo piso esta a altura h.
+	// La piedra paga caro: casi siempre hay alternativa de hierba por
+	// fuera, y cruzar cuevas solo compensa cuando no queda otra
+	function malusPisoCol(e, x, z, h) {
+		if (h === null) return 0
+		initPisos()
+		const b = window.VXL.world.getBlock(x, h, z) & 0xff
+		if (piedraIds.has(b)) return 8
+		if (cespedId >= 0 && b === cespedId) return 0
+		return 1
+	}
+
+	// ¿El bloque de APOYO de la entidad es de piedra?
+	function pisoPiedra(e) {
+		initPisos()
+		const apoyo = Math.floor(e.y - e.bottomH - 0.5)
+		const b = window.VXL.world.getBlock(Math.round(e.x), apoyo, Math.round(e.z)) & 0xff
+		return piedraIds.has(b)
+	}
+
+	// ¿La columna 0,8 por delante en la direccion a pisa CESPED?  Con el
+	// id de cesped sin declarar (un mock sin el catalogo) devuelve true:
+	// sin preferencia, todo cuenta como hierba
+	function aLaHierba(e, a) {
+		initPisos()
+		if (cespedId < 0) return true
+		const world = window.VXL.world
+		const x = Math.round(e.x - Math.sin(a) * 0.8)
+		const z = Math.round(e.z + Math.cos(a) * 0.8)
+		const suelo = Math.floor(e.y - e.bottomH - 0.5)
+		for (let y = suelo + 1; y >= suelo - 1; y--) {
+			if (solido(world.getBlock(x, y, z)))
+				return (world.getBlock(x, y, z) & 0xff) === cespedId
+		}
+		return false
+	}
+
+	// ¿La columna 0,8 por delante en la direccion a pisa PIEDRA?  (para
+	// doblar ANTES de meterse en la cueva, no ya dentro)
+	function aLaPiedra(e, a) {
+		initPisos()
+		const world = window.VXL.world
+		const x = Math.round(e.x - Math.sin(a) * 0.8)
+		const z = Math.round(e.z + Math.cos(a) * 0.8)
+		const suelo = Math.floor(e.y - e.bottomH - 0.5)
+		for (let y = suelo + 1; y >= suelo - 1; y--) {
+			const b = world.getBlock(x, y, z) & 0xff
+			if (solido(world.getBlock(x, y, z))) return piedraIds.has(b)
+		}
+		return false
+	}
+
+	// Superficie pisable de la columna (x,z) al nivel de la vaca: el
+	// bloque solido mas alto con DOS de aire limpio (sin agua ni lava)
+	// encima, mirando un poco por encima y por debajo del apoyo actual.
+	// null si la columna no tiene piso util cerca (muro alto, charco,
+	// arbol visto desde el suelo...).  cache: memo entre columnas del
+	// mismo calculo de ruta.
+	function colRuta(e, x, z, cache) {
+		const k = x * 65536 + z
+		if (cache) {
+			const c = cache.get(k)
+			if (c !== undefined) return c
+		}
+		const V = window.VXL
+		const world = V.world
+		let r = null
+		const ref = Math.floor(e.y - e.bottomH - 0.5)
+		for (let y = ref + 2; y >= ref - 6; y--) {
+			if (!solido(world.getBlock(x, y, z))) continue
+			const a1 = world.getBlock(x, y + 1, z)
+			const a2 = world.getBlock(x, y + 2, z)
+			if (solido(a1) || solido(a2)) continue
+			if ((a1 & 0xff) === V.blockIds.waterBlock || esLava(a1)) break
+			if ((a2 & 0xff) === V.blockIds.waterBlock || esLava(a2)) break
+			r = y
+			break
+		}
+		if (cache) cache.set(k, r)
+		return r
+	}
+
+	// ¿Puede la vaca pasar de la columna (x,z) a la (nx,nz)?  Sube
+	// hasta 2 (el salto del movimiento lo cubre) y baja hasta 3 (el
+	// salto de bajada) -- desde un ARBOL hasta 12 (la caida seca de la
+	// copa).  La diagonal no corta esquinas: hace falta poder pasar
+	// por los dos lados que la forman.
+	function pasoRuta(e, x, z, nx, nz, cache) {
+		const V = window.VXL
+		const world = V.world
+		const h0 = colRuta(e, x, z, cache)
+		if (h0 === null) return false
+		const h1 = colRuta(e, nx, nz, cache)
+		if (h1 === null) return false
+		// la PIEDRA no se pisa NI EN RUTA: sin este veto el A* podria
+		// disenar el cruce por dentro de la cueva (el atajo mas barato)
+		// y la vaca se pegaria contra la boca --delante no deja pisar
+		// piedra-- o entraria por las bajadas que si deja.  El malus es
+		// la capa blanda; este es el muro
+		if (!fondoPisa(world.getBlock(nx, h1, nz))) return false
+		const dh = h1 - h0
+		if (dh > 2 || -dh > (enArbol(e) ? 12 : 3)) return false
+		if (x !== nx && z !== nz)
+			return pasoRuta(e, x, z, nx, z, cache) && pasoRuta(e, x, z, x, nz, cache)
+		return true
+	}
+
+	// Cola de prioridad minima (monticulo binario) para el A*
+	class Monticulo {
+		constructor() { this.a = [] }
+		get tam() { return this.a.length }
+		mete(n) {
+			const a = this.a
+			a.push(n)
+			let i = a.length - 1
+			while (i > 0) {
+				const p = (i - 1) >> 1
+				if (a[p].f <= a[i].f) break
+				const t = a[p]; a[p] = a[i]; a[i] = t; i = p
+			}
+		}
+		saca() {
+			const a = this.a, top = a[0], last = a.pop()
+			if (a.length) {
+				a[0] = last
+				let i = 0
+				for (;;) {
+					const l = 2 * i + 1, r = l + 1
+					let m = i
+					if (l < a.length && a[l].f < a[m].f) m = l
+					if (r < a.length && a[r].f < a[m].f) m = r
+					if (m === i) break
+					const t = a[m]; a[m] = a[i]; a[i] = t; i = m
+				}
+			}
+			return top
+		}
+	}
+	const DIRS_RUTA = [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [1, -1], [-1, 1], [-1, -1]]
+
+	// A* de columnas: la ruta hasta el objetivo o, si no existe camino,
+	// hasta lo mas cerca que se pueda llegar (el tramo parcial se
+	// recorre igual: al acabarlo manda el rumbo directo de siempre y el
+	// reloj de bloqueo decide).  Las columnas vetadas por un atasco se
+	// saltan un rato: cada reintento prueba un camino DISTINTO.
+	function buscarRuta(e, gx, gz) {
+		const sx = Math.round(e.x), sz = Math.round(e.z)
+		if (sx === gx && sz === gz) return []
+		const cache = new Map()
+		if (colRuta(e, sx, sz, cache) === null) return null
+		const hW = (x, z) => Math.hypot(gx - x, gz - z)
+		const evita = e.avoidRuta
+		const g = new Map(), de = new Map(), coords = new Map()
+		const cerrados = new Set(), abiertos = new Monticulo()
+		const sk = sx * 65536 + sz
+		g.set(sk, 0)
+		coords.set(sk, { x: sx, z: sz })
+		abiertos.mete({ x: sx, z: sz, f: hW(sx, sz) })
+		let mejor = { x: sx, z: sz, h: hW(sx, sz), k: sk }
+		for (let n = 0; abiertos.tam && n < 320; n++) {
+			const cur = abiertos.saca()
+			const ck = cur.x * 65536 + cur.z
+			if (cerrados.has(ck)) continue
+			cerrados.add(ck)
+			const ch = hW(cur.x, cur.z)
+			if (ch < mejor.h) mejor = { x: cur.x, z: cur.z, h: ch, k: ck }
+			if (cur.x === gx && cur.z === gz) { mejor = { x: cur.x, z: cur.z, k: ck }; break }
+			for (const d of DIRS_RUTA) {
+				const nx = cur.x + d[0], nz = cur.z + d[1], nk = nx * 65536 + nz
+				if (evita && (evita.get(nk) || 0) > 0) continue
+				if (!pasoRuta(e, cur.x, cur.z, nx, nz, cache)) continue
+				const h0 = colRuta(e, cur.x, cur.z, cache)
+				const h1 = colRuta(e, nx, nz, cache)
+				const ng = g.get(ck) + (d[0] && d[1] ? 1.414 : 1)
+					+ (h1 > h0 ? (h1 - h0) * 0.5 : 0) + malusPisoCol(e, nx, nz, h1)
+				if (!g.has(nk) || ng < g.get(nk)) {
+					g.set(nk, ng)
+					de.set(nk, ck)
+					coords.set(nk, { x: nx, z: nz })
+					abiertos.mete({ x: nx, z: nz, f: ng + 1.4 * hW(nx, nz) })
+				}
+			}
+		}
+		const ruta = []
+		let k = mejor.k
+		while (k !== undefined && k !== sk) {
+			const c = coords.get(k)
+			if (!c) break
+			ruta.push(c)
+			k = de.get(k)
+		}
+		ruta.reverse()
+		return ruta.length > 64 ? ruta.slice(0, 64) : ruta
+	}
+
+	// Gestion del rumbo por RUTA (A* de columnas).  Primero deja que el
+	// rumbo directo y el abanico local esquivan lo pequeno; si el paso
+	// lleva ~600 ms tapado, calcula la ruta COMPLETA alrededor del
+	// obstaculo y sigue sus nodos.  La ruta se re-evalua cada ~1,5-2 s
+	// y al instante si el terreno cambio o si la vaca se atasco: el
+	// nodo de delante queda VETADO un rato y el siguiente intento dobla
+	// por otro lado.
+	function gestionarRuta(e, ds, gx, gz, directo, rumbo) {
+		// objetivo nuevo: se suelta la ruta anterior
+		if (!e.rutaDest || e.rutaDest.x !== gx || e.rutaDest.z !== gz) {
+			e.rutaDest = { x: gx, z: gz }
+			e.ruta = null
+			e.rutaT = 0
+			e.bloqueoDirecto = 0
+			e.pasoRuta = 0
+			e.lxRuta = e.x
+			e.lzRuta = e.z
+		}
+		// los vetos de atasco caducan solos
+		if (e.avoidRuta && e.avoidRuta.size) {
+			for (const [k, t] of e.avoidRuta) {
+				const nt = t - ds * 1000
+				if (nt <= 0) e.avoidRuta.delete(k)
+				else e.avoidRuta.set(k, nt)
+			}
+		}
+		// antes de comprometer una ruta: darle ~600 ms al abanico.
+		// Excepcion: PIEDRA por delante (o pisandola) se compromete en
+		// el acto, ANTES de meterse en la cueva --la ruta de columnas
+		// es la que sabe rodearla
+		if (!e.ruta) {
+			if (rumbo(directo)) e.bloqueoDirecto = 0
+			else e.bloqueoDirecto += ds * 1000
+			if (e.bloqueoDirecto < 600
+					&& !(aLaPiedra(e, directo)
+					|| (pisoPiedra(e) && !aLaHierba(e, directo)))) return
+		}
+		// anti-atasco: cada 20 ticks, con ruta y sin moverse: el nodo de
+		// delante se veta y se re-rutea en el acto
+		e.pasoRuta++
+		if (e.pasoRuta >= 20) {
+			e.pasoRuta = 0
+			const movido = Math.hypot(e.x - e.lxRuta, e.z - e.lzRuta)
+			e.lxRuta = e.x
+			e.lzRuta = e.z
+			if (movido < 0.3 && e.ruta && e.ruta.length) {
+				if (!e.avoidRuta) e.avoidRuta = new Map()
+				e.avoidRuta.set(e.ruta[0].x * 65536 + e.ruta[0].z, 10000)
+				e.rutaT = 0
+			}
+		}
+		// re-evaluacion periodica de la ruta (el mundo cambia)
+		e.rutaT -= ds * 1000
+		if (e.rutaT <= 0) {
+			e.rutaT = 1500 + Math.random() * 500
+			e.ruta = buscarRuta(e, gx, gz)
+		}
+		if (!e.ruta || !e.ruta.length) return
+		// consumir el nodo al que ya ha llegado
+		while (e.ruta.length
+				&& Math.hypot(e.ruta[0].x + 0.5 - e.x, e.ruta[0].z + 0.5 - e.z) <= 0.55)
+			e.ruta.shift()
+		if (!e.ruta.length) return
+		// el terreno cambio: el primer paso ya no se puede dar → ruta nueva
+		if (!pasoRuta(e, Math.round(e.x), Math.round(e.z), e.ruta[0].x, e.ruta[0].z))
+			e.rutaT = 0
 	}
 
 	// El objetivo directo esta tapado: intenta saltarlo (muro de 2 o bajada
@@ -1219,27 +1680,45 @@ void main() {
 			// a por agua).  NO se pide cima ni nivel exacto: basta con
 			// que el presupuesto cimaIntentos<5 siga abierto (el
 			// estancamiento se cuenta al ATERRIZAR, aqui solo se lanza).
-			if (hayDescenso(e, directo)) {
+			// Solo desde el suelo: a media CAIDA la sonda ve fondo por
+			// debajo y dispararia un rebote en el aire
+			if (e.onGround && hayDescenso(e, directo)) {
 				e.saltarT = SALTO_MS
 				e.saltos++
 				e.vy = SALTO_BAJADA
 				e.cimaY = Math.floor(e.y - e.bottomH - 0.5)
 				return
 			}
+			// Sobre un ARBOL (copa o tronco) la bajada normal no llega:
+			// hayDescenso solo mira suelo-4 y una copa alta queda a 5+
+			// de cima, sin fondo por el camino.  Con una caida seca
+			// delante se MANTIENE el rumbo directo y el movimiento la
+			// cruza (baja andando: la gravedad hace el resto); el unico
+			// requisito es enArbol(), que confirma el apoyo por ID, asi
+			// el hueco del pozo (test 10), que SI depende del -4 de
+			// hayDescenso, sigue intacto.
+			if (enArbol(e) && esCaidaSeca(e, directo)) return
 		}
-		if (e.esquivando > 0 && !transitable(e, e.esquivObj)) {
-			// el tramo del rodeo se ha tapado: se cambia de direccion sin
-			// reiniciar el contador (solo es metrica, no reloj de rendicion)
-			e.esquivObj = elegirRodeo(e, directo)
-			if (e.esquivObj === null) e.esquivando = 0
-		} else if (e.esquivando <= 0) {
-			const a = elegirRodeo(e, directo)
-			if (a === null) return
-			e.esquivObj = a
-			e.esquivando = 1
+		// Rodeo: el abanico se re-evalua en CADA tick, no se fija una
+		// direccion hasta que se bloque (la ruta puede mejorar mientras
+		// la vaca gira o el obstaculo cambia de forma).  La direccion
+		// que ya lleva se conserva mientras empaten las puntuaciones:
+		// asi no traquetea el rumbo en cada frame.
+		let a = elegirRuta(e, directo)
+		if (a !== null && e.esquivando > 0 && e.esquivObj !== null
+				&& puntuaRuta(e, e.esquivObj) >= puntuaRuta(e, a)) a = e.esquivObj
+		if (a === null) {
+			// ninguna direccion abierta: empuja contra el ultimo rumbo
+			// bueno (o contra el propio objetivo) y que decida el reloj
+			// de bloqueo del llamante (2,5 s -> falloBusqueda)
+			if (e.esquivando <= 0) return
+			e.esquivando += ds * 1000
+			return
 		}
+		e.esquivObj = a
+		if (e.esquivando <= 0) e.esquivando = 1
 		e.esquivando += ds * 1000
-		e.encabObj = e.esquivObj
+		e.encabObj = a
 	}
 
 	function pensar(e, ds) {
@@ -1249,6 +1728,14 @@ void main() {
 		e.stats.hidratacion = Math.max(0, e.stats.hidratacion - HIDRATACION_DESGASTE * ds)
 		// la mata que no se pudo alcanzar vuelve a poder elegirse pasado un rato
 		if (e.proh > 0) e.proh -= ds * 1000
+		// las orillas de agua descartadas por inalcanzables caducan solas
+		if (e.vetoAgua && e.vetoAgua.size) {
+			for (const [k, t] of e.vetoAgua) {
+				const nt = t - ds * 1000
+				if (nt <= 0) e.vetoAgua.delete(k)
+				else e.vetoAgua.set(k, nt)
+			}
+		}
 		// la pausa general de busqueda tambien corre
 		e.buscaPausa = Math.max(0, e.buscaPausa - ds * 1000)
 		const puedeBuscar = e.buscaPausa <= 0
@@ -1301,7 +1788,10 @@ void main() {
 					e.cimaIntentos = 0
 					e.distIntento = Infinity
 					e.estado = "walk"
-					e.temporizador = 6000 + Math.random() * 6000
+					// objetivo lejano: el paseo se alarga segun la
+					// distancia (a ~1,5 b/s); los cercanos no cambian
+					e.temporizador = Math.max(6000 + Math.random() * 6000,
+						Math.hypot(agua.x - e.x, agua.z - e.z) * 700 + 6000)
 					e.encabObj = Math.atan2(-(agua.x - e.x), agua.z - e.z)
 					e.anim = "walk"
 					e.tAnim = 0
@@ -1317,7 +1807,12 @@ void main() {
 					e.cimaIntentos = 0
 					e.distIntento = Infinity
 					e.estado = "walk"
-					e.temporizador = 6000 + Math.random() * 6000
+					// como el agua: con la mata lejos el paseo dura lo
+					// justo para llegar andando
+					e.temporizador = g
+						? Math.max(6000 + Math.random() * 6000,
+							Math.hypot(g.x - e.x, g.z - e.z) * 700 + 6000)
+						: 6000 + Math.random() * 6000
 					e.encabObj = Math.random() * Math.PI * 2
 					e.anim = "walk"
 					e.tAnim = 0
@@ -1405,6 +1900,10 @@ void main() {
 					e.esquivando = 0
 					e.cimaIntentos = 0
 					e.distIntento = Infinity
+					// si el nuevo objetivo queda lejos, el paseo en curso
+					// no llega ni de lejos: se alarga por distancia
+					e.temporizador = Math.max(e.temporizador,
+						Math.hypot(g.x - e.x, g.z - e.z) * 700 + 6000)
 				}
 			}
 		}
@@ -1435,8 +1934,21 @@ void main() {
 			// rumbo a la columna de agua; el reloj de bloqueo solo se
 			// resetea con PROGRESO REAL (0,75 bloques mas cerca): el rodeo
 			// y la vuelta al muro no lo cuentan.  A los 2,5 s sin avance
-			// se olvida (como la mata inalcanzable)
-			e.encabObj = Math.atan2(-(e.beber.x - e.x), e.beber.z - e.z)
+			// se olvida (como la mata inalcanzable).  En pleno salto NO se
+			// re-apunta: la bajada del arbol (u otro vuelo) fija su rumbo
+			// y el giro en el aire lo desviaria del hueco elegido
+			if (e.saltarT <= 0)
+				e.encabObj = Math.atan2(-(e.beber.x - e.x), e.beber.z - e.z)
+			// ruta A*: si el paso lleva ~600 ms tapado, doblar por el
+			// camino que rodea el obstaculo (re-evaluada cada poco y con
+			// vetos de atasco).  En pleno vuelo el rumbo ya esta fijado
+			if (e.saltarT <= 0) {
+				gestionarRuta(e, ds, e.beber.x, e.beber.z, e.encabObj, rumbo)
+				if (e.ruta && e.ruta.length) {
+					const n = e.ruta[0]
+					e.encabObj = Math.atan2(-(n.x + 0.5 - e.x), n.z + 0.5 - e.z)
+				}
+			}
 			const dB = Math.hypot(e.beber.x - e.x, e.beber.z - e.z)
 			if (dB < e.distIntento - 0.75) {
 				e.distIntento = dB
@@ -1444,7 +1956,11 @@ void main() {
 			}
 			if (!rumbo(e.encabObj)) {
 				superarObstaculo(e, ds, e.encabObj)
-				e.beberBloq += ds * 1000
+				// Con RUTA en marcha el reloj no corre: el anti-atasco
+				// (20 ticks sin mover → veto + re-ruta) juzga esos pines.
+				// Sin ruta manda el reloj de siempre: 2,5 s sin poder ir
+				// recto y el beber se olvida.
+				if (!(e.ruta && e.ruta.length)) e.beberBloq += ds * 1000
 				if (e.beberBloq > 2500) {
 					falloBusqueda(e)
 					e.beber = null
@@ -1496,16 +2012,35 @@ void main() {
 				// el reloj de bloqueo solo se resetea con PROGRESO REAL
 				// (0,75 bloques mas cerca): rodear o dar vueltas al muro no
 				// cuenta.  A los 2,5 s sin avance se olvida de esa mata y la
-				// excluye 8 s
+				// excluye 8 s.  En pleno salto NO se re-apunta: la bajada
+				// del arbol fija su rumbo en la direccion de la caida
+			if (e.saltarT <= 0)
 				e.encabObj = Math.atan2(-(e.pastor.x - e.x), e.pastor.z - e.z)
-				const dP = Math.hypot(e.pastor.x - e.x, e.pastor.z - e.z)
+			// ruta A*: si el paso lleva ~600 ms tapado, doblar por el
+			// camino que rodea el obstaculo (re-evaluada cada poco y con
+			// vetos de atasco).  En pleno vuelo el rumbo ya esta fijado
+			if (e.saltarT <= 0) {
+				gestionarRuta(e, ds, e.pastor.x, e.pastor.z, e.encabObj, rumbo)
+				if (e.ruta && e.ruta.length) {
+					const n = e.ruta[0]
+					e.encabObj = Math.atan2(-(n.x + 0.5 - e.x), n.z + 0.5 - e.z)
+				}
+			}
+			const dP = Math.hypot(e.pastor.x - e.x, e.pastor.z - e.z)
 				if (dP < e.distIntento - 0.75) {
 					e.distIntento = dP
 					e.pastorBloq = 0
 				}
-				if (!rumbo(e.encabObj)) {
-					superarObstaculo(e, ds, e.encabObj)
-					e.pastorBloq += ds * 1000
+			if (!rumbo(e.encabObj)) {
+				superarObstaculo(e, ds, e.encabObj)
+				// Con RUTA en marcha el reloj no corre: el anti-atasco
+				// (20 ticks sin mover → veto + re-ruta) juzga esos pines.
+				// Sin ruta manda el reloj de siempre: 2,5 s sin poder ir
+				// recto y la mata se olvida.  Asi un rodeo largo pegado a
+				// una pared no acumula ruido de sonda (la sonda redondea
+				// a la columna de al lado y "ve" bloqueo caminando recto)
+				// y no olvida la mata a mitad del viaje.
+				if (!(e.ruta && e.ruta.length)) e.pastorBloq += ds * 1000
 					if (e.pastorBloq > 2500) {
 						falloBusqueda(e)
 						e.proh = 8000
@@ -1523,11 +2058,19 @@ void main() {
 			}
 		}
 		if (e.estado === "walk") {
-			// en pleno salto NO se redecide el rumbo: la sonda ve el
-			// escalon a media altura, daria media vuelta en el aire y
-			// el vuelo saldria hacia detras
-			if (e.saltarT <= 0 && !e.pastor && !e.beber
-					&& (!rumbo(e.encabObj) || e.bloqueado)) {
+			// en pleno salto NI EN CAIDA LIBRE se redecide el rumbo: la
+			// sonda ve el escalon a media altura, daria media vuelta en
+			// el aire y el vuelo saldria hacia detras.  Y en la caida del
+			// filo de una copa el suelo del probe baja con la vaca:
+			// saltable() veria la hoja de abajo como un escalon y la
+			// re-decision la devolveria a la copa de un brinco en pleno
+			// vuelo.  Con PIEDRA pisada o por delante tambien se
+			// re-decide: el campo quiere estar sobre el cesped y las
+			// cuevas son de piedra
+			if (e.saltarT <= 0 && e.onGround && !e.pastor && !e.beber
+					&& (!rumbo(e.encabObj) || e.bloqueado
+					|| ((pisoPiedra(e) || aLaPiedra(e, e.encabObj))
+					&& !aLaHierba(e, e.encabObj)))) {
 				// primero: si lo que tapa el paso es un escalon de 1 (el
 				// motor real no lo sube andando), se SALTA en vez de media
 				// vuelta; despues la vuelta (barranco u agua justo
@@ -1538,11 +2081,28 @@ void main() {
 					e.saltos++
 					e.vy = SALTO_VY1
 					e.cimaY = Math.floor(e.y - e.bottomH - 0.5)
+				} else if (enArbol(e) && elegirRuta(e, e.encabObj) !== null) {
+					// sin objetivo y parada encima de un arbol: elige
+					// alguna salida (la propia caida seca de delante
+					// puntua, asi no da media vuelta en el filo) y el
+					// movimiento la cruza andando; el paseo no usa
+					// hayDescenso porque una copa alta queda fuera de
+					// suelo-4 y no encontraria nunca fondo
+					e.encabObj = elegirRuta(e, e.encabObj)
 				} else {
-					e.encabObj = e.encab + Math.PI
-					for (let i = 0; i < 5 && !rumbo(e.encabObj); i++) {
-						e.encabObj = Math.random() * Math.PI * 2
+					// media vuelta y hasta 6 intentos, prefiriendo los
+					// que pisan CESPED (la piedra muerde).  Sin salida
+					// ninguna: QUIETA y mirando a donde miraba --tirar
+					// randoms cada tick la haria girar sobre su propio
+					// eje
+					let libre = rumbo(e.encabObj) ? e.encabObj : null
+					for (let i = 0; i < 6; i++) {
+						const a = i === 0 ? e.encab + Math.PI : Math.random() * Math.PI * 2
+						if (!rumbo(a)) continue
+						if (libre === null) libre = a
+						if (aLaHierba(e, a)) { libre = a; break }
 					}
+					e.encabObj = libre !== null ? libre : e.encab
 					e.cimaIntentos = 0
 				}
 				e.bloqueado = false
@@ -1556,10 +2116,14 @@ void main() {
 				// apunta al obstaculo y el vuelo no da tiempo a girar
 				e.vx = -Math.sin(e.encabObj) * v
 				e.vz = Math.cos(e.encabObj) * v
-			} else if (rumbo(e.encab)) {
+			} else if (rumbo(e.encab)
+					|| (enArbol(e) && esCaidaSeca(e, e.encab))) {
 				// solo avanza si la direccion ACTUAL es transitable: si no, la
 				// vaca gira en el sitio en la orilla en vez de ir meterse en el
-				// agua mientras calcula el nuevo rumbo
+				// agua mientras calcula el nuevo rumbo.  La excepcion es la
+				// bajada de un ARBOL: delante() frena los barrancos de 2+
+				// (guardia normal), pero si el apoyo es de arbol y la caida
+				// es seca se puede cruzar andando; la gravedad la baja
 				e.vx = -Math.sin(e.encab) * v
 				e.vz = Math.cos(e.encab) * v
 			} else {
@@ -1731,8 +2295,12 @@ void main() {
 
 		// no lanzarse al vacio: si no hay suelo delante, se da la vuelta
 		// (si no, el guardia daria media vuelta en el filo de la cresta y
-		// la vaca se quedaria paseando por ahi; en pleno salto no mira)
-		if (e.onGround && e.saltarT <= 0 && e.estado === "walk" && (e.vx || e.vz)) {
+		// la vaca se quedaria paseando por ahi; en pleno salto no mira).
+		// La excepcion es la bajada de un ARBOL: ahi el vacio de delante
+		// ES el camino y este guardia la daria vuelta en la arista justo
+		// antes de que el cuerpo sobresalga y caiga
+		if (e.onGround && e.saltarT <= 0 && e.estado === "walk" && (e.vx || e.vz)
+				&& !(enArbol(e) && esCaidaSeca(e, e.encab))) {
 			const dx = -Math.sin(e.encab) * 0.7
 			const dz = Math.cos(e.encab) * 0.7
 			if (!delante(e, dx, dz)) {

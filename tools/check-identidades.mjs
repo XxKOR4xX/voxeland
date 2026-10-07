@@ -97,12 +97,17 @@ const AGUA_HASTA = 49
 const esAgua = (x, z) => x >= 40 && x < 80 && z >= 40 && z < 80
 const bloqueSuelo = (x, z) => (esAgua(x, z) ? 45 : SUELO)
 
-const BLOCK = 1             // hierba solida
+const BLOCK = 1             // hierba solida (el id 1 del juego es el bloque de GRASS)
 const AGUA = 9
+const PIEDRA = 3            // stone del catalogo real (id 3): la IA la evita
 // gramilla que el test puede colocar en cualquier parte (ver setBlock)
 const HIERBA_ALTA_B = 10    // tallGrassBottom
 const HIERBA_ALTA_T = 11    // tallGrassTop
 const HIERBA_PLANA = 12     // grassPlant
+// tronco y hoja del arbol (enArbol() los distingue por ID: los tests
+// antiguos de copa usan BLOCK y NO deben disparar la bajada especial)
+const TRONCO = 13           // oakLog
+const HOJA = 14             // leaves
 const colocados = new Map() // "x,y,z" -> bloque
 const clave = (x, y, z) => x + "," + y + "," + z
 function getBlock(x, y, z) {
@@ -223,9 +228,18 @@ window.VXL = {
 	get world() { return world },
 	get fogDist() { return 100 },
 	get blockIds() {
-		return { waterBlock: AGUA, tallGrassBottom: HIERBA_ALTA_B, tallGrassTop: HIERBA_ALTA_T, grassPlant: HIERBA_PLANA }
+		return { waterBlock: AGUA, tallGrassBottom: HIERBA_ALTA_B, tallGrassTop: HIERBA_ALTA_T, grassPlant: HIERBA_PLANA, oakLog: TRONCO, leaves: HOJA, grass: BLOCK, stone: PIEDRA }
 	},
-	get blockData() { return [undefined, {}] },
+	get blockData() {
+		// solido() consulta blockData[id]: entrada para el suelo y para
+		// tronco/hoja/piedra (solidos, sin passable); la gramilla no lleva
+		// entrada (undefined = no solido), igual que en el juego
+		const bd = [undefined, {}]
+		bd[TRONCO] = {}
+		bd[HOJA] = {}
+		bd[PIEDRA] = {}
+		return bd
+	},
 	get indexBuffer() { return {} },
 	collided,
 	terrainHeight: () => SUELO,
@@ -1046,8 +1060,13 @@ let maxHidr = 0
 	} else {
 		tAnimPrev = -1
 	}
-	// pisar la columna del agua (20,35) si; rodearla por (20,34) es legitimo
-	if (Math.round(sedienta.x) === 20 && Math.round(sedienta.z) === 35) pisoAgua = true
+	// pisar la columna del agua (20,35) si; rodearla por (20,34) es legitimo.
+	// Solo se vigila hasta terminar el trago: despues la vaca sigue paseando
+	// medio minuto por la llanura y cruzar en diagonal la esquina del charco
+	// (vadeo somero: el agua es pasable) es cosa del paseo, no del arrimo
+	if ((!bebio || sedienta.estado === "drink")
+			&& Math.round(sedienta.x) === 20 && Math.round(sedienta.z) === 35)
+		pisoAgua = true
 	if (sedienta.stats.hidratacion > maxHidr) maxHidr = sedienta.stats.hidratacion
 }
 const trago = tragoFrames * 0.033
@@ -1181,9 +1200,11 @@ for (let x = 23; x <= 40; x++) for (let z = 27; z <= 34; z++)
 	chunkDe(x >> 4, z >> 4).tops[(z & 15) * 16 + (x & 15)] = 49
 window.VXLIdentidades.limpiar()
 
-// 10) Lo mismo por la via del AGUA: buscarAgua() no tiene exclusion (proh),
-//     asi que en cada paseo a idle re-apuntaba al mismo charco tras el
-//     repicado de +2.  Misma pausa tras dos fallos.
+// 10) Lo mismo por la via del AGUA, con la semantica nueva del escaneo:
+//     el agua del pozo queda a 4 bajo el borde, ni alcanzable por ruta
+//     ni a la altura de la boca.  Antes se marcaba igual y la vaca
+//     acosaba el hoyo en un bucle eterno (fallo, re-marcar, fallo...);
+//     ahora buscarAgua valida la orilla ANTES de poner rumbo.
 const paredes2 = []
 for (let z = 27; z <= 34; z++) {              // muro oeste
 	world.setBlock(23, 50, z, 1); paredes2.push([23, 50, z])
@@ -1218,18 +1239,28 @@ pozo.temporizador = 5000                       // ciclos walk/idle normales
 pozo.stats.saciedad = 100                      // sin gramilla de por medio
 pozo.stats.hidratacion = 30                    // sed: va a por el agua
 pozo.beber = null; pozo.beberBloq = 0; pozo.proxBusq = 0; pozo.bloqueado = false
-let maxPausaAgua = 0, dentro = true, beberAcq = 0, beberAntes = false
+let marcoPozo = false, bebioPozo = false, dentro = true
 for (let i = 0; i < 1500; i++) {
 	escReloj += 33
 	window.updateIdentidades()
-	if (pozo.buscaPausa > maxPausaAgua) maxPausaAgua = pozo.buscaPausa
-	if (pozo.x >= 30.5) dentro = false
-	if (pozo.beber && !beberAntes) beberAcq++
-	beberAntes = !!pozo.beber
+	// caer DENTRO del repicado: columnas del hoyo con los pies bajo el
+	// nivel del terreno (la ruta de columnas puede dejarla deambulando
+	// por el borde o saltar el muro de 2 hacia fuera, que es legal)
+	if (Math.round(pozo.x) >= 29 && Math.round(pozo.z) >= 27
+			&& Math.round(pozo.z) <= 34 && pozo.y - pozo.bottomH < 49)
+		dentro = false
+	// el escaneo valida la orilla ANTES de marcar: el agua a 4 bajo el
+	// borde no se marca (marcarla era el acoso eterno contra el hoyo)
+	if (pozo.beber && pozo.beber.x >= 29 && pozo.beber.z >= 27
+			&& pozo.beber.z <= 34) marcoPozo = true
+	if (pozo.estado === "drink") bebioPozo = true
 }
-ok(maxPausaAgua > 0, "el charco inalcanzable tambien entra en la pausa de " +
-	"busqueda (" + num(maxPausaAgua) + " ms max, " + beberAcq + " intentos)")
-ok(dentro, "la vaca no entra en el repicado ni lo rodea (x " + num(pozo.x) + ")")
+ok(!marcoPozo && !bebioPozo && dentro,
+	"el pozo inalcanzable ni se marca ni se acosa ni se bebe (" +
+	(marcoPozo ? "MARCO EL POZO" : "sin marca") + ", " +
+	(bebioPozo ? "bebio" : "sin trago") + ", " +
+	(dentro ? "no cayo" : "cayo dentro") + "; el escaneo valida la " +
+	"orilla alcanzable antes de poner rumbo)")
 for (const c of paredes2) world.setBlock(c[0], c[1], c[2], 0)
 for (const c of celdasPozo) colocados.delete(clave(c[0], c[1], c[2]))
 for (let x = 23; x <= 40; x++) for (let z = 27; z <= 34; z++)
@@ -1620,6 +1651,500 @@ ok(piesMax20 <= 50.5 + 1e-9, "acaba en el rellano de y=50, no en la cima " +
 for (const c of pilote20) world.setBlock(c[0], c[1], c[2], 0)
 for (let x = 15; x <= 19; x++) for (let z = 39; z <= 43; z++)
 	chunkDe(x >> 4, z >> 4).tops[(z & 15) * 16 + (x & 15)] = 49
+window.VXLIdentidades.limpiar()
+
+// 21) Abanico con desviacion MINIMA: la columna de agua corta el paso
+//     (saltable la rechaza, no hay descenso) y el abanico ordenado
+//     [recta, 30, 60, 90, 120, 135] se va por el 30 mas cercano al
+//     rumbo.  El abanico viejo arrancaba en el 90 (media vuelta) y con
+//     el empate >= ganaria el 135: ambas se quedan a mas de 85 grados
+//     del rumbo original.
+const agua21 = [[30, 50, 30], [30, 51, 30]]
+for (const c of agua21) colocados.set(clave(c[0], c[1], c[2]), AGUA)
+colocados.set(clave(36, 50, 30), HIERBA_ALTA_B)
+colocados.set(clave(36, 51, 30), HIERBA_ALTA_T)
+const sorteadora = window.VXLIdentidades.spawn("vaca", 26.5, 49.5 + alto * 0.7, 30)
+sorteadora.encab = sorteadora.encabObj = -Math.PI / 2 // rumbo recto a la mata
+sorteadora.estado = "walk"; sorteadora.anim = "walk"
+sorteadora.temporizador = 1e9
+sorteadora.stats.saciedad = 40
+sorteadora.stats.hidratacion = 100
+sorteadora.pastor = { x: 36, z: 30 }; sorteadora.pastorBloq = 0
+sorteadora.beber = null; sorteadora.beberBloq = 0
+sorteadora.proxBusq = 1e9; sorteadora.bloqueado = false
+let desvioRuta = null, comioRuta = false, esq21 = 0
+for (let i = 0; i < 1500; i++) {
+	escReloj += 33
+	window.updateIdentidades()
+	if (desvioRuta === null && sorteadora.esquivando > 0 && esq21 <= 0) {
+		const directo21 = Math.atan2(-(36 - sorteadora.x), 30 - sorteadora.z)
+		let dif21 = (sorteadora.encabObj - directo21) % (Math.PI * 2)
+		if (dif21 > Math.PI) dif21 -= Math.PI * 2
+		if (dif21 < -Math.PI) dif21 += Math.PI * 2
+		desvioRuta = Math.abs(dif21) * 180 / Math.PI
+	}
+	esq21 = sorteadora.esquivando
+	if (getBlock(36, 50, 30) === 0 && getBlock(36, 51, 30) === 0) comioRuta = true
+}
+ok(desvioRuta !== null && desvioRuta < 85,
+	"el rodeo se aparta lo justo: 30 grados del abanico ordenado (" +
+	(desvioRuta === null ? "no hubo rodeo" : num(desvioRuta) + " grados") +
+	", tope 85)")
+ok(comioRuta, "y la ruta esquiva llega a la mata (" +
+	(comioRuta ? "comio" : "sin comer") + ")")
+for (const c of agua21) colocados.delete(clave(c[0], c[1], c[2]))
+colocados.delete(clave(36, 50, 30)); colocados.delete(clave(36, 51, 30))
+window.VXLIdentidades.limpiar()
+
+// 22) Pastoreo a distancia: RADIO_GRAMA = 48 ve una mata a 26 bloques
+//     (con el radio 9 de antes quedaba fuera del escaneo y la vaca se
+//     quedaba paseando sin objetivo).  El escaneo del arranque la
+//     marca y llega andando hasta ella.
+colocados.set(clave(10, 50, 36), HIERBA_ALTA_B)
+colocados.set(clave(10, 51, 36), HIERBA_ALTA_T)
+const visera = window.VXLIdentidades.spawn("vaca", 10, 49.5 + alto * 0.7, 10)
+visera.estado = "idle"; visera.anim = "idle"
+visera.temporizador = 1                        // decide ya: escanear la zona
+visera.encab = visera.encabObj = 0             // mirando a +z, hacia la mata
+visera.stats.saciedad = 40                     // hambre: activa el pastoreo
+visera.stats.hidratacion = 100                 // sin sed: el lago no tienta
+visera.pastor = null; visera.beber = null
+escReloj += 33
+window.updateIdentidades()
+const miraLejos = !!visera.pastor && visera.pastor.x === 10 && visera.pastor.z === 36
+ok(miraLejos, "el escaneo ve la mata a 26 bloques (RADIO_GRAMA 48; con el " +
+	"radio 9 no la encuentra)")
+let comioLejos = false
+for (let i = 0; i < 1500 && !comioLejos; i++) {
+	escReloj += 33
+	window.updateIdentidades()
+	if (getBlock(10, 50, 36) === 0 && getBlock(10, 51, 36) === 0) comioLejos = true
+}
+ok(comioLejos, "camina los 26 bloques y se come la mata (" +
+	(comioLejos ? "comio" : "sin comer") + ")")
+colocados.delete(clave(10, 50, 36)); colocados.delete(clave(10, 51, 36))
+window.VXLIdentidades.limpiar()
+
+// 23) Bajar del arbol CON objetivo: la vaca nace en la copa y la mata
+//     esta al otro lado del borde, en el suelo.  delante() frena el
+//     barranco, pero con apoyo de arbol y caida seca el rumbo se
+//     mantiene y la gravedad la baja ANDANDO; abajo remata la mata.
+//     Sin el pase del arbol (enArbol && esCaidaSeca) queda clavada en
+//     el filo empujando aire y el reloj de bloqueo la rinde.
+const arbol23 = []
+const arb23 = (x, y, z, b) => { world.setBlock(x, y, z, b); arbol23.push([x, y, z]) }
+for (let y = 50; y <= 53; y++) arb23(35, y, 70, TRONCO)     // tronco
+for (let x = 33; x <= 37; x++) for (let z = 68; z <= 72; z++)
+	arb23(x, 54, z, HOJA)                                  // copa 5x5
+colocados.set(clave(38, 50, 70), HIERBA_ALTA_B)
+colocados.set(clave(38, 51, 70), HIERBA_ALTA_T)
+const copada = window.VXLIdentidades.spawn("vaca", 35, 54.5 + alto * 0.7, 70)
+copada.encab = copada.encabObj = -Math.PI / 2  // mirando al borde este (+x)
+copada.estado = "walk"; copada.anim = "walk"
+copada.temporizador = 1e9
+copada.stats.saciedad = 40
+copada.stats.hidratacion = 100
+copada.pastor = { x: 38, z: 70 }; copada.pastorBloq = 0
+copada.beber = null; copada.beberBloq = 0
+copada.proxBusq = 1e9; copada.bloqueado = false
+let minPies23 = copada.y - copada.bottomH, comioCopa = false
+for (let i = 0; i < 1200; i++) {
+	escReloj += 33
+	window.updateIdentidades()
+	const p23 = copada.y - copada.bottomH
+	if (p23 < minPies23) minPies23 = p23
+	if (getBlock(38, 50, 70) === 0 && getBlock(38, 51, 70) === 0) comioCopa = true
+}
+ok(minPies23 <= 50.5, "con objetivo se baja de la copa andando (pies min " +
+	num(minPies23) + ", suelo 49,5)")
+ok(comioCopa, "y en el suelo remata la mata del borde (" +
+	(comioCopa ? "comio" : "sin comer") + ")")
+for (const c of arbol23) world.setBlock(c[0], c[1], c[2], 0)
+for (let x = 31; x <= 39; x++) for (let z = 66; z <= 74; z++)
+	chunkDe(x >> 4, z >> 4).tops[(z & 15) * 16 + (x & 15)] = 49
+colocados.delete(clave(38, 50, 70)); colocados.delete(clave(38, 51, 70))
+window.VXLIdentidades.limpiar()
+
+// 24) Bajar del arbol SIN objetivo (paseo): la cresta de hojas es de
+//     UN bloque de ancho, asi que en el filo todas las direcciones del
+//     abanico empatan a 1 (la caida) y gana la recta: sigue andando y
+//     se cae por el extremo ESTE.  Tres formas de quedarse arriba: la
+//     guardia antivacio daria media vuelta en la arista (la excepcion
+//     del arbol la apaga), sin la re-decision del abanico daria la
+//     vuelta y la deriva del giro la tiraria por un lado, y con la
+//     re-decision activa en plena caida el brinco de saltable la
+//     devolveria a la copa (el suelo del probe baja con la vaca).
+const arbol24 = []
+for (let y = 50; y <= 53; y++) {
+	world.setBlock(35, y, 70, TRONCO); arbol24.push([35, y, 70])
+}
+for (let x = 33; x <= 37; x++) {
+	world.setBlock(x, 54, 70, HOJA); arbol24.push([x, 54, 70])
+}
+const paseante = window.VXLIdentidades.spawn("vaca", 35, 54.5 + alto * 0.7, 70)
+paseante.encab = paseante.encabObj = -Math.PI / 2  // mirando al extremo este
+paseante.estado = "walk"; paseante.anim = "walk"
+paseante.temporizador = 1e9                        // el paseo no se corta
+paseante.stats.saciedad = 100                      // llena: no escanea matas
+paseante.stats.hidratacion = 100                   // sin sed: no busca agua
+paseante.pastor = null; paseante.beber = null
+paseante.proxBusq = 1e9; paseante.bloqueado = false
+let minPies24 = paseante.y - paseante.bottomH, xSalida24 = -1
+for (let i = 0; i < 600; i++) {
+	escReloj += 33
+	window.updateIdentidades()
+	const p24 = paseante.y - paseante.bottomH
+	if (p24 < minPies24) minPies24 = p24
+	if (xSalida24 < 0 && p24 < 53) xSalida24 = paseante.x
+}
+ok(minPies24 <= 50.5 && xSalida24 >= 37.5,
+	"el paseo se baja del arbol por el extremo (pies min " + num(minPies24) +
+	", sale en x " + (xSalida24 < 0 ? "nunca" : num(xSalida24)) +
+	"; la guardia y la media vuelta lo dejan en la copa)")
+for (const c of arbol24) world.setBlock(c[0], c[1], c[2], 0)
+for (let x = 31; x <= 39; x++) for (let z = 66; z <= 74; z++)
+	chunkDe(x >> 4, z >> 4).tops[(z & 15) * 16 + (x & 15)] = 49
+window.VXLIdentidades.limpiar()
+
+// 25) Ruta A* alrededor de un obstaculo GRANDE: muro largo de 3 con la
+//     esquina norte CERRADA (el abanico elige el lado del primer empate
+//     --el norte-- y se clava en la esquina para siempre: su sonda ve
+//     el corredor abierto y el reloj de bloqueo ni arranca).  Con la
+//     ruta de columnas, tras ~600 ms de paso tapado se calcula el
+//     camino completo por el sur y la vaca dobla y llega a la mata.
+const muro25 = []
+const m25 = (x, y, z) => { world.setBlock(x, y, z, 1); muro25.push([x, y, z]) }
+for (let z = 12; z <= 31; z++) {           // muro largo al este, insaltable (3 alto)
+	for (const y of [50, 51, 52]) m25(30, y, z)
+}
+for (let x = 26; x <= 30; x++) {           // tapia norte: cierra la esquina que clava
+	for (const y of [50, 51, 52]) m25(x, y, 11)
+}
+colocados.set(clave(34, 50, 25), HIERBA_ALTA_B)
+colocados.set(clave(34, 51, 25), HIERBA_ALTA_T)
+const guiada = window.VXLIdentidades.spawn("vaca", 26.5, 49.5 + alto * 0.7, 25)
+guiada.encab = guiada.encabObj = -Math.PI / 2 // rumbo recto a la mata
+guiada.estado = "walk"; guiada.anim = "walk"
+guiada.temporizador = 1e9
+guiada.stats.saciedad = 40
+guiada.stats.hidratacion = 100
+guiada.pastor = { x: 34, z: 25 }; guiada.pastorBloq = 0
+guiada.beber = null; guiada.beberBloq = 0
+guiada.proxBusq = 1e9; guiada.bloqueado = false
+let comioRutaLarga = false, esq25 = 0
+for (let i = 0; i < 2000; i++) {
+	escReloj += 33
+	window.updateIdentidades()
+	if (guiada.esquivando > esq25) esq25 = guiada.esquivando
+	if (getBlock(34, 50, 25) === 0 && getBlock(34, 51, 25) === 0) comioRutaLarga = true
+}
+ok(esq25 > 0 && comioRutaLarga,
+	"la ruta de columnas dobla por el lado bueno y llega a la mata (" +
+	(comioRutaLarga ? "comio" : "sin comer") + "; el abanico solo se " +
+	"clava en la esquina del muro: esquivando " + num(esq25) + " ms)")
+for (const c of muro25) world.setBlock(c[0], c[1], c[2], 0)
+for (let x = 25; x <= 36; x++) for (let z = 9; z <= 33; z++)
+	chunkDe(x >> 4, z >> 4).tops[(z & 15) * 16 + (x & 15)] = 49
+colocados.delete(clave(34, 50, 25)); colocados.delete(clave(34, 51, 25))
+window.VXLIdentidades.limpiar()
+
+// 26) El agua se toma A RAS DE SUELO, nunca desde un arbol: este
+//     arbol-isla esta rodeado de agua y su hoja queda a 3 de ella; la
+//     ventana de bebida sobre hojas mira un nivel como mucho, asi que
+//     la vaca sedienta en la copa no puede beber en el aire NI siquiera
+//     marca el agua de abajo (la orilla no se alcanza a nivel de boca).
+const isla26 = []
+for (let y = 50; y <= 53; y++) {
+	world.setBlock(35, y, 70, TRONCO); isla26.push([35, y, 70])
+}
+world.setBlock(35, 54, 70, HOJA); isla26.push([35, 54, 70])
+const agua26 = []
+for (let x = 34; x <= 36; x++) for (let z = 69; z <= 71; z++) {
+	if (x === 35 && z === 70) continue
+	colocados.set(clave(x, 50, z), AGUA); agua26.push([x, 50, z])
+	colocados.set(clave(x, 51, z), AGUA); agua26.push([x, 51, z])
+}
+const isla = window.VXLIdentidades.spawn("vaca", 35, 54.5 + alto * 0.7, 70)
+isla.estado = "idle"; isla.anim = "idle"
+isla.temporizador = 1                        // decide ya: buscarAgua
+isla.stats.saciedad = 100
+isla.stats.hidratacion = 0                    // sed: ve el agua de abajo
+isla.pastor = null; isla.beber = null
+isla.proxBusq = 1e9; isla.bloqueado = false
+let bebioEnCopa = false, marcoAbajo = false
+for (let i = 0; i < 1500; i++) {
+	escReloj += 33
+	window.updateIdentidades()
+	if (isla.estado === "drink" && isla.y - isla.bottomH > 51.5)
+		bebioEnCopa = true
+	if (isla.beber) marcoAbajo = true
+}
+ok(!bebioEnCopa && !marcoAbajo,
+	"no bebe desde la copa del arbol: el agua se toma a ras de suelo (" +
+	(bebioEnCopa ? "BEBIO EN EL AIRE" : "sin trago desde arriba") + ", " +
+	(marcoAbajo ? "MARCO el agua de abajo" : "ni la marca") +
+	": la ventana de bebida sobre hojas mira un nivel como mucho)")
+for (const c of isla26) world.setBlock(c[0], c[1], c[2], 0)
+for (const c of agua26) colocados.delete(clave(c[0], c[1], c[2]))
+window.VXLIdentidades.limpiar()
+
+// 27) El campo es del CESPED y la piedra muerde (las cuevas son de
+//     piedra): la vaca entra pisando una llanura de piedra y el paseo
+//     debe salir de ella enseguida en vez de atravesarla como si nada.
+const piedra27 = []
+for (let x = 10; x <= 29; x++) for (let z = 10; z <= 29; z++) {
+	colocados.set(clave(x, 49, z), PIEDRA); piedra27.push([x, 49, z])
+}
+const campera = window.VXLIdentidades.spawn("vaca", 7.5, 49.5 + alto * 0.7, 15)
+campera.encab = campera.encabObj = -Math.PI / 2  // mirando a la llanura de piedra
+campera.estado = "walk"; campera.anim = "walk"
+campera.temporizador = 1e9                      // el paseo no se corta
+campera.stats.saciedad = 100                    // llena: nada que buscar
+campera.stats.hidratacion = 100
+campera.pastor = null; campera.beber = null
+campera.proxBusq = 1e9; campera.bloqueado = false
+let rachaPiedra = 0, maxRachaPiedra = 0
+for (let i = 0; i < 1200; i++) {
+	escReloj += 33
+	window.updateIdentidades()
+	if (getBlock(Math.round(campera.x), 49, Math.round(campera.z)) === PIEDRA) {
+		rachaPiedra++
+		if (rachaPiedra > maxRachaPiedra) maxRachaPiedra = rachaPiedra
+	} else rachaPiedra = 0
+}
+ok(maxRachaPiedra < 80, "el paseo sale de la piedra enseguida (racha max " +
+	maxRachaPiedra + " ticks sobre piedra, tope 80; cruzandola de par en " +
+	"par son ~370)")
+for (const c of piedra27) colocados.delete(clave(c[0], c[1], c[2]))
+window.VXLIdentidades.limpiar()
+
+// 28) La RUTA tambien evita la piedra: la franja de piedra veta el
+//     paso directo a la mata (es pisable, no un muro) y el A* debe
+//     rodearla por la hierba en vez de cruzarla de par en par.
+const piedra28 = []
+for (let x = 30; x <= 35; x++) for (let z = 27; z <= 33; z++) {
+	colocados.set(clave(x, 49, z), PIEDRA); piedra28.push([x, 49, z])
+}
+colocados.set(clave(40, 50, 30), HIERBA_ALTA_B)
+colocados.set(clave(40, 51, 30), HIERBA_ALTA_T)
+const apartada = window.VXLIdentidades.spawn("vaca", 26.5, 49.5 + alto * 0.7, 30)
+apartada.encab = apartada.encabObj = -Math.PI / 2  // rumbo recto a la mata
+apartada.estado = "walk"; apartada.anim = "walk"
+apartada.temporizador = 1e9
+apartada.stats.saciedad = 40
+apartada.stats.hidratacion = 100
+apartada.pastor = { x: 40, z: 30 }; apartada.pastorBloq = 0
+apartada.beber = null; apartada.beberBloq = 0
+apartada.proxBusq = 1e9; apartada.bloqueado = false
+let racha28 = 0, maxRacha28 = 0, comio28 = false
+for (let i = 0; i < 1500; i++) {
+	escReloj += 33
+	window.updateIdentidades()
+	if (getBlock(Math.round(apartada.x), 49, Math.round(apartada.z)) === PIEDRA) {
+		racha28++
+		if (racha28 > maxRacha28) maxRacha28 = racha28
+	} else racha28 = 0
+	if (getBlock(40, 50, 30) === 0 && getBlock(40, 51, 30) === 0) comio28 = true
+}
+ok(comio28 && maxRacha28 < 80, "la ruta rodea la franja de piedra y llega a " +
+	"la mata (" + (comio28 ? "comio" : "sin comer") + ", racha max " +
+	maxRacha28 + " ticks sobre piedra, tope 80; cruzandola son ~100)")
+for (const c of piedra28) colocados.delete(clave(c[0], c[1], c[2]))
+colocados.delete(clave(40, 50, 30)); colocados.delete(clave(40, 51, 30))
+window.VXLIdentidades.limpiar()
+
+// 29) La orilla inalcanzable no se ACOSA: el pozo es lo mas cercano
+//     pero su agua queda a 4 bajo el borde (ni beber ni bajar); el
+//     charco alcanzable esta mas lejos.  El escaneo valida antes de
+//     marcar: rechaza el pozo (vetandolo) y acaba marcando el charco.
+//     Antes marcaba el pozo y la vaca se clavaba contra el borde en un
+//     bucle de fallos que podia durar minutos.
+const pozo29 = []
+for (let x = 30; x <= 32; x++) for (let z = 40; z <= 41; z++) {
+	for (let y = 46; y <= 49; y++) {
+		colocados.set(clave(x, y, z), 0); pozo29.push([x, y, z])
+	}
+	colocados.set(clave(x, 44, z), AGUA); pozo29.push([x, 44, z])
+	colocados.set(clave(x, 45, z), AGUA); pozo29.push([x, 45, z])
+}
+colocados.set(clave(20, 50, 45), AGUA)      // el charco alcanzable, mas lejos
+const charquera = window.VXLIdentidades.spawn("vaca", 26, 49.5 + alto * 0.7, 41)
+charquera.estado = "idle"; charquera.anim = "idle"
+charquera.temporizador = 1                 // decide ya: buscarAgua
+charquera.stats.saciedad = 100
+charquera.stats.hidratacion = 0
+charquera.pastor = null; charquera.beber = null
+charquera.proxBusq = 1e9; charquera.bloqueado = false
+let marcoPozo29 = false, bebioCharco = false
+for (let i = 0; i < 1500; i++) {
+	escReloj += 33
+	window.updateIdentidades()
+	if (charquera.beber && charquera.beber.x >= 30 && charquera.beber.x <= 32
+			&& charquera.beber.z >= 40 && charquera.beber.z <= 41)
+		marcoPozo29 = true
+	if (charquera.estado === "drink") bebioCharco = true
+}
+ok(!marcoPozo29 && bebioCharco,
+	"el pozo inalcanzable no se acosa y la vaca acaba bebiendo del " +
+	"charco alcanzable (" + (marcoPozo29 ? "MARCO EL POZO" : "pozo sin marca") +
+	", " + (bebioCharco ? "bebio" : "sin beber") + ")")
+for (const c of pozo29) colocados.delete(clave(c[0], c[1], c[2]))
+colocados.delete(clave(20, 50, 45))
+window.VXLIdentidades.limpiar()
+
+// 30) El arbusto de hojas que crece EN la orilla no es una copa: la
+//     ventana de bebida sobre hojas mira un nivel como mucho, y desde
+//     el arbusto el charco queda a la altura de la boca.  Prohibir
+//     beber sobre cualquier hoja dejaba a las vacas clavadas en las
+//     orillas con arbustos sin poder tomar agua.
+const arbusto30 = [[35, 50, 65]]
+world.setBlock(35, 50, 65, HOJA)
+colocados.set(clave(36, 49, 65), BLOCK)     // tierra firme con el charco a +x
+colocados.set(clave(36, 50, 65), AGUA)
+const matorral = window.VXLIdentidades.spawn("vaca", 35, 50.5 + alto * 0.7, 65)
+matorral.estado = "idle"; matorral.anim = "idle"
+matorral.temporizador = 1                   // decide ya: buscarAgua
+matorral.stats.saciedad = 100
+matorral.stats.hidratacion = 0
+matorral.pastor = null; matorral.beber = null
+matorral.proxBusq = 1e9; matorral.bloqueado = false
+let bebioArbusto = false, piesArbusto = 0
+for (let i = 0; i < 300; i++) {
+	escReloj += 33
+	window.updateIdentidades()
+	if (matorral.estado === "drink") {
+		bebioArbusto = true
+		piesArbusto = matorral.y - matorral.bottomH
+	}
+}
+ok(bebioArbusto && piesArbusto > 49.9,
+	"bebe desde el arbusto de la orilla, con el agua a nivel de boca (" +
+	(bebioArbusto ? "bebio a pies " + num(piesArbusto) : "sin beber") +
+	"; el gate total por hoja la dejaba clavada)")
+for (const c of arbusto30) world.setBlock(c[0], c[1], c[2], 0)
+colocados.delete(clave(36, 49, 65)); colocados.delete(clave(36, 50, 65))
+window.VXLIdentidades.limpiar()
+
+// 31) Las CUEVAS no se entran: la boca de esta cueva-zanja (piso de
+//     piedra a 3 bajo la superficie) corta el paso directo a la mata.
+//     El salto de bajada no se lanza a un fondo de piedra y la ruta de
+//     columnas prefiere rodear por la hierba (el malus la encarece) en
+//     vez de cruzar la cueva: el cesped de la superficie no esta
+//     alla abajo.
+const cueva31 = []
+for (let x = 30; x <= 32; x++) for (let z = 27; z <= 33; z++) {
+	for (let y = 47; y <= 49; y++) {
+		colocados.set(clave(x, y, z), 0); cueva31.push([x, y, z])
+	}
+	colocados.set(clave(x, 46, z), PIEDRA); cueva31.push([x, 46, z])
+}
+colocados.set(clave(36, 50, 30), HIERBA_ALTA_B)
+colocados.set(clave(36, 51, 30), HIERBA_ALTA_T)
+const cuevera = window.VXLIdentidades.spawn("vaca", 26.5, 49.5 + alto * 0.7, 30)
+cuevera.encab = cuevera.encabObj = -Math.PI / 2  // rumbo recto a la mata
+cuevera.estado = "walk"; cuevera.anim = "walk"
+cuevera.temporizador = 1e9
+cuevera.stats.saciedad = 40
+cuevera.stats.hidratacion = 100
+cuevera.pastor = { x: 36, z: 30 }; cuevera.pastorBloq = 0
+cuevera.beber = null; cuevera.beberBloq = 0
+cuevera.proxBusq = 1e9; cuevera.bloqueado = false
+let comio31 = false, cayo31 = false
+for (let i = 0; i < 1500; i++) {
+	escReloj += 33
+	window.updateIdentidades()
+	if (cuevera.y - cuevera.bottomH < 48.9) cayo31 = true
+	if (getBlock(36, 50, 30) === 0 && getBlock(36, 51, 30) === 0) comio31 = true
+}
+ok(comio31 && !cayo31,
+	"la boca de la cueva ni se salta ni se entra: la ruta rodea por la " +
+	"hierba y llega a la mata (" + (comio31 ? "comio" : "sin comer") + ", " +
+	(cayo31 ? "CAYO A LA CUEVA" : "sin caer") + ")")
+for (const c of cueva31) colocados.delete(clave(c[0], c[1], c[2]))
+colocados.delete(clave(36, 50, 30)); colocados.delete(clave(36, 51, 30))
+window.VXLIdentidades.limpiar()
+
+// 32) La ruta NUNCA cruza la CUEVA: la colina corta el paso recto a
+//     la mata y el tunel de piedra es el atajo mas barato (29 de
+//     coste contra 35 del rodeo por la hierba).  Con el veto de
+//     piedra de pasoRuta el A* no llega a plantear el cruce (la
+//     columna con suelo PIEDRA no es expandible), la vaca rodea y
+//     llega sin pisar nunca piedra; sin el veto el plan incluye el
+//     nodo (34,30) en el primer commit — se vigila el plan mismo, no
+//     su execution: el fan del anti-atasco podria esquivar de lado y
+//     enmascarar el pin.
+const colina32 = []
+for (let x = 34; x <= 35; x++) for (let z = 20; z <= 40; z++)
+	for (let y = 50; y <= 52; y++) {
+		colocados.set(clave(x, y, z), BLOCK); colina32.push([x, y, z])
+	}
+for (let x = 34; x <= 35; x++) {
+	colocados.set(clave(x, 50, 30), 0); colina32.push([x, 50, 30])
+	colocados.set(clave(x, 51, 30), 0); colina32.push([x, 51, 30])
+	colocados.set(clave(x, 49, 30), PIEDRA); colina32.push([x, 49, 30])
+}
+colocados.set(clave(46, 50, 30), HIERBA_ALTA_B)
+colocados.set(clave(46, 51, 30), HIERBA_ALTA_T)
+const tunelera = window.VXLIdentidades.spawn("vaca", 30.5, 49.5 + alto * 0.7, 30)
+tunelera.encab = tunelera.encabObj = -Math.PI / 2  // rumbo recto: el tunel en linea
+tunelera.estado = "walk"; tunelera.anim = "walk"
+tunelera.temporizador = 1e9
+tunelera.stats.saciedad = 40
+tunelera.stats.hidratacion = 100
+tunelera.pastor = { x: 46, z: 30 }; tunelera.pastorBloq = 0
+tunelera.beber = null; tunelera.beberBloq = 0
+tunelera.proxBusq = 1e9; tunelera.bloqueado = false
+let comio32 = false, racha32 = 0, maxRacha32 = 0, cruza32 = false
+for (let i = 0; i < 1500; i++) {
+	escReloj += 33
+	window.updateIdentidades()
+	if (tunelera.ruta) for (const n of tunelera.ruta)
+		if ((n.x === 34 || n.x === 35) && n.z === 30) cruza32 = true
+	const ap = Math.floor(tunelera.y - tunelera.bottomH - 0.5)
+	if (getBlock(Math.round(tunelera.x), ap, Math.round(tunelera.z)) === PIEDRA) {
+		racha32++
+		if (racha32 > maxRacha32) maxRacha32 = racha32
+	} else racha32 = 0
+	if (getBlock(46, 50, 30) === 0 && getBlock(46, 51, 30) === 0) comio32 = true
+}
+ok(comio32 && !cruza32 && maxRacha32 === 0,
+	"la ruta no cruza la cueva: el A* ni plantea el tunel y rodea " +
+	"la colina por la hierba (" + (comio32 ? "comio" : "sin comer") +
+	(cruza32 ? ", PLAN con el nodo (34,30) del tunel" : ", sin plan de tunel") +
+	", racha " + maxRacha32 + " ticks sobre piedra)")
+for (const c of colina32) colocados.delete(clave(c[0], c[1], c[2]))
+colocados.delete(clave(46, 50, 30)); colocados.delete(clave(46, 51, 30))
+window.VXLIdentidades.limpiar()
+
+// 33) El paseo NO salta a la PIEDRA: este escalon suelto de la
+//     llanura no es una cima de hierba.  Con el veto del salto la
+//     vaca se da la vuelta sin pisarla; sin el veto lo salta a la
+//     primera y acaba encima.
+colocados.set(clave(30, 50, 30), PIEDRA)
+const escalonera = window.VXLIdentidades.spawn("vaca", 26.5, 49.5 + alto * 0.7, 30)
+escalonera.encab = escalonera.encabObj = -Math.PI / 2
+escalonera.estado = "walk"; escalonera.anim = "walk"
+escalonera.temporizador = 1e9
+escalonera.stats.saciedad = 100
+escalonera.stats.hidratacion = 100
+escalonera.pastor = null; escalonera.beber = null
+escalonera.proxBusq = 1e9; escalonera.bloqueado = false
+let racha33 = 0, maxRacha33 = 0
+for (let i = 0; i < 1200; i++) {
+	escReloj += 33
+	window.updateIdentidades()
+	const ap = Math.floor(escalonera.y - escalonera.bottomH - 0.5)
+	if (getBlock(Math.round(escalonera.x), ap, Math.round(escalonera.z)) === PIEDRA) {
+		racha33++
+		if (racha33 > maxRacha33) maxRacha33 = racha33
+	} else racha33 = 0
+}
+ok(maxRacha33 === 0 && escalonera.saltos === 0,
+	"el paseo no salta a la piedra: el escalon se rodea andando " +
+	"(racha max " + maxRacha33 + " ticks encima, salto " +
+	escalonera.saltos + " intentos; sin el veto del salto lo sube " +
+	"a la primera)")
+colocados.delete(clave(30, 50, 30))
 window.VXLIdentidades.limpiar()
 
 performance.now = realPerf

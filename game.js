@@ -7799,6 +7799,7 @@ function MineKhan() {
 			initWorldsMenu()
 			changeScene("main menu")
 		})
+		Button.add(width / 2, 475, 300, 40, "Importar libro", "pause", importarLibroArchivo, nothing, () => "Abre un archivo .json de libro exportado de VOXELAND y lo mete en el primer hueco libre del inventario.\n\nFunciona en cualquier mundo y en cualquier version: el mundo se guarda al importar.")
 		
 		// Options buttons
 		Button.add(width / 2, 455, width / 3, 40, "Back", "options", r => changeScene(previousScreen))
@@ -8468,6 +8469,17 @@ function MineKhan() {
 		}
 	}
 
+	// Coordenada X del centro del libro CERRADO (sprite 201x237
+	// aspect-fit, anclado a la derecha: misma formula que bookLayout en
+	// vista portada).  La flecha -> del pie vive aqui en AMBAS vistas:
+	// al abrir el libro no salta de sitio y la < aparece a su lado.
+	function bookCoverCenterX(L) {
+		const availH = Math.max(60, L.bh - L.tabsH - L.footH)
+		const scale = Math.min(L.bw / 201, availH / 237)
+		const sw = Math.round(201 * scale)
+		return L.bx + L.bw - sw + sw / 2
+	}
+
 	function drawBook() {
 		// El mundo se ve entero (sin velo): el widget del libro flota en
 		// la esquina inferior derecha.
@@ -8503,6 +8515,7 @@ function MineKhan() {
 		// hover/cursor se actualiza solo).
 		bookZones.length = 0
 		drawBookTabs(L)
+		drawBookSave(L)
 		drawBookFoot(L)
 		drawBookClose(L)
 		if (bookView === "cover") {
@@ -8556,14 +8569,23 @@ function MineKhan() {
 	// Pestana cuyo nombre se esta editando (-1 = ninguna)
 	let bookChapterEdit = -1
 
+	// Inset horizontal del icono X de cerrar (drawBookClose): la fila de
+	// pestañas se alinea a la derecha con el borde derecho de la X, asi
+	// que comparten esta formula.
+	function bookCloseInset(L) {
+		return Math.round(L.sw * 0.075)
+	}
+
 	// Geometria de la fila [Portada][1][2][3][4]: la comparten
 	// drawBookTabs y openBookChapterName (misma formula, sin deriva).
+	// El borde derecho de la fila coincide con el borde derecho de la
+	// X (la fila cuelga hacia la izquierda desde ahi).
 	function bookTabsLayout(L) {
 		const th = L.tabS
 		const gap = Math.max(2, Math.round(th * 0.12))
 		const portW = Math.round(th * 2.3)
 		const total = portW + 4 * th + 4 * gap
-		const x0 = L.bx + L.bw - total
+		const x0 = L.sx + L.sw - bookCloseInset(L) - total
 		return {
 			th: th, gap: gap, portW: portW, x0: x0,
 			y: L.by + (L.tabsH - th),
@@ -8632,7 +8654,7 @@ function MineKhan() {
 		}
 	}
 
-	// Fila de pestañas sobre el sprite, alineada a la derecha:
+	// Fila de pestañas alineada a la derecha con el icono X:
 	// [Portada] [1] [2] [3] [4].  Portada = pestana del color del PAPEL
 	// (tinta oscura); capitulos = color de la CUBIERTA (texto beige).
 	// Las etiquetas van SIN negrilla (solo fillText).  La activa se
@@ -8754,13 +8776,13 @@ function MineKhan() {
 		drawScreens.book()
 	}
 
-	// Pie de navegacion: en vista hojas, las DOS flechas JUNTAS al
-	// centro del sprite (par a par), indicador a continuacion y A- / A+
-	// a la izquierda.  En portada: A- / A+ (tamano del titulo) a la
-	// izquierda y la flecha de ABRIR el libro centrada bajo la tapa.
-	// Flechas del kit con direccion inequivoca: flecha_izquierda = par
-	// previo (y desde el par 1 vuelve a la portada), flecha_derecha =
-	// par siguiente.
+	// Pie de navegacion: la flecha -> vive SIEMPRE en el centro del
+	// libro CERRADO (bookCoverCenterX), igual en portada que en hojas:
+	// abrir el libro NO la mueve de sitio.  En portada abre el libro;
+	// en hojas pasa al par siguiente con la < a su lado (par previo, y
+	// desde el par 1 vuelve a la portada).  El indicador de paginas
+	// queda a la izquierda de la < y A- / A+ en el borde izquierdo del
+	// pie (portada graduan el titulo, hojas la letra).
 	function drawBookFoot(L) {
 		const def = ITEMS[bookSlot.state]
 		const ah = Math.max(18, Math.min(30, Math.round(L.sh * 0.13)))
@@ -8775,9 +8797,10 @@ function MineKhan() {
 		ctx.lineWidth = 3
 		ctx.strokeStyle = "rgba(0, 0, 0, 0.9)"
 		if (bookView === "cover") {
-			// Portada: A- / A+ (tamano del titulo) a la izquierda y la
-			// flecha de ABRIR el libro centrada bajo la tapa
-			const bfs = Math.max(12, Math.round(ah * 0.55))
+		// Portada: A- / A+ (tamano del titulo) a la izquierda y la
+		// flecha de ABRIR el libro bajo la tapa (bookCoverCenterX: la
+		// vista hojas la replica en la MISMA coordenada)
+		const bfs = Math.max(12, Math.round(ah * 0.55))
 			let cfx = L.sx + 4
 			for (const t of ["A-", "A+"]) {
 				ctx.font = bfs + 'px "Pirata One"'
@@ -8792,8 +8815,8 @@ function MineKhan() {
 				bookZones.push({ x: cfx, y: L.footY, w: tw, h: L.footH, cb: () => adjustBookFont(t === "A+" ? 1 : -1, true) })
 				cfx += tw + 8
 			}
-			const x = Math.round(L.sx + L.sw / 2 - nw / 2)
-			const hov = mouseX >= x - 8 && mouseX < x + nw + 8 && mouseY >= y - 8 && mouseY < y + ah + 8
+		const x = Math.round(bookCoverCenterX(L) - nw / 2)
+		const hov = mouseX >= x - 8 && mouseX < x + nw + 8 && mouseY >= y - 8 && mouseY < y + ah + 8
 			if (imgReady(nextImg)) {
 				ctx.drawImage(nextImg, x, y, nw, ah)
 			} else {
@@ -8811,22 +8834,16 @@ function MineKhan() {
 			ctx.textBaseline = "alphabetic"
 			return
 		}
-		// Vista hojas: par [previa][siguiente] JUNTO, centrado en el sprite
-		// (coordenada redondeada: pixel-perfect al escalar el arte)
+		// Vista hojas: la -> SIEMPRE en la coordenada de la flecha de
+		// la portada (bookCoverCenterX) para que no salte al abrir el
+		// libro; la < aparece a su lado, a la izquierda.
 		const gap = 10
-		const pairW = pw + gap + nw
-		const px = Math.round(L.sx + L.sw / 2 - pairW / 2)
+		const nextX = Math.round(bookCoverCenterX(L) - nw / 2)
+		const prevX = nextX - gap - pw
 		const zones = [
-			{ x: px, y: y, w: pw, h: ah, cb: () => turnBookSpread(-1) },
-			{ x: px + pw + gap, y: y, w: nw, h: ah, cb: () => turnBookSpread(1) }
+			{ x: prevX, y: y, w: pw, h: ah, cb: () => turnBookSpread(-1) },
+			{ x: nextX, y: y, w: nw, h: ah, cb: () => turnBookSpread(1) }
 		]
-		// Indicador de paginas justo despues del par
-		ctx.font = Math.max(11, Math.round(ah * 0.5)) + 'px "Pirata One"'
-		ctx.fillStyle = "rgb(216, 214, 192)"
-		const label = "Paginas " + (bookSpread * 2 + 1) + "-" + Math.min(bookSpread * 2 + 2, def.pages) + " / " + def.pages
-		const lx = px + pairW + 16 + ctx.measureText(label).width / 2
-		ctx.strokeText(label, lx, cyF)
-		ctx.fillText(label, lx, cyF)
 		// Botones A- / A+ en el borde izquierdo del pie
 		const bfs = Math.max(12, Math.round(ah * 0.55))
 		let fx = L.sx + 4
@@ -8842,6 +8859,16 @@ function MineKhan() {
 			}
 			bookZones.push({ x: fx, y: L.footY, w: tw, h: L.footH, cb: () => adjustBookFont(t === "A+" ? 1 : -1) })
 			fx += tw + 8
+		}
+		// Indicador de paginas centrado en el hueco entre A+ y la flecha
+		// < (si no cabe, no se dibuja)
+		ctx.font = Math.max(11, Math.round(ah * 0.5)) + 'px "Pirata One"'
+		ctx.fillStyle = "rgb(216, 214, 192)"
+		const label = "Paginas " + (bookSpread * 2 + 1) + "-" + Math.min(bookSpread * 2 + 2, def.pages) + " / " + def.pages
+		const gapL = prevX - 10 - fx
+		if (gapL > ctx.measureText(label).width + 8) {
+			ctx.strokeText(label, fx + gapL / 2, cyF)
+			ctx.fillText(label, fx + gapL / 2, cyF)
 		}
 		// Flechas: zonas con margen (son pequenas) y dibujo
 		for (const z of zones) {
@@ -8881,7 +8908,7 @@ function MineKhan() {
 		const s = Math.max(0.8, Math.min(1.3, L.sh / 320))
 		const w = Math.round((imgReady(base) ? base.width : 22) * s)
 		const h = Math.round((imgReady(base) ? base.height : 19) * s)
-		const inset = Math.round(L.sw * 0.075)
+		const inset = bookCloseInset(L)
 		const x = Math.round(L.sx + L.sw - w - inset)
 		const y = Math.round(L.sy + L.sh * 0.058)
 		const hov = mouseX >= x - 6 && mouseX < x + w + 6 && mouseY >= y - 6 && mouseY < y + h + 6
@@ -9176,6 +9203,254 @@ function MineKhan() {
 		})
 		bookchapter.addEventListener("contextmenu", function(e) {
 			e.preventDefault()
+		})
+	}
+
+	// ------------------------------------------------------------------
+	// Guardar/Abrir libros en archivo local (.json): un libro es un slot
+	// del inventario y muere con el mundo; serializado a archivo vive
+	// fuera de el.  La identidad viaja por tono+papel (el id numerico
+	// puede desplazarse entre versiones) y sanitizarLibro reconstruye un
+	// slot valido venga de la version que venga.
+	//   - Exportar: boton "Guardar" a la izquierda de las pestañas.
+	//   - Importar: boton "Importar libro" del menu Pause -> hueco libre.
+	// ------------------------------------------------------------------
+	const LIBRO_FORMATO = "voxeland.libro"
+	const LIBRO_FORMATO_V = 1
+
+	// slot -> objeto plano para el archivo.  Solo campos conocidos: no
+	// se clona el slot entero (nada de arrastrar campos de runtime).
+	function serializarLibro(slot) {
+		const def = ITEMS[slot.state] || {}
+		return {
+			format: LIBRO_FORMATO, v: LIBRO_FORMATO_V,
+			juego: "VOXELAND", version: version,
+			guardado: Date.now(),
+			libro: {
+				tono: def.tono || null, papel: def.papel || null,
+				state: slot.state,
+				title: slot.title || "",
+				text: (slot.text || []).map(t => t || ""),
+				signed: !!slot.signed,
+				signDate: Number(slot.signDate) > 0 ? Number(slot.signDate) : 0,
+				author: slot.author || "",
+				chapters: (slot.chapters || [-1, -1, -1, -1]).slice(0, 4),
+				chapNames: (slot.chapNames || []).slice(0, 4),
+				fontSize: slot.fontSize || 0,
+				coverFontSize: slot.coverFontSize || 0
+			}
+		}
+	}
+
+	// Archivo -> slot de inventario valido, o null si no es un libro de
+	// VOXELAND.  Tolerante entre versiones: id por tono+papel, fallback
+	// al state guardado si sigue siendo libro, y de ahi al ITEM_BOOK
+	// historico.  Todo campo se recorta/rellena al rango actual; las
+	// paginas SOBRANTES no se recortan (una version futura con mas
+	// paginas conserva las extra al reimportar).
+	function sanitizarLibro(raw) {
+		const b = raw && typeof raw === "object" && raw.libro && typeof raw.libro === "object" ? raw.libro : null
+		if (!b) {
+			return null
+		}
+		const ti = BOOK_TONOS.indexOf(b.tono)
+		const pi = BOOK_PAPELES.indexOf(b.papel)
+		const state = ti >= 0 && pi >= 0
+			? ITEM_BOOK + ti * BOOK_PAPELES.length + pi
+			: (ITEMS[b.state] && ITEMS[b.state].book ? b.state : ITEM_BOOK)
+		const def = ITEMS[state]
+		const text = []
+		if (Array.isArray(b.text)) {
+			for (let i = 0; i < Math.min(b.text.length, 64); i++) {
+				text.push(String(b.text[i] == null ? "" : b.text[i]).slice(0, 256))
+			}
+		}
+		while (text.length < def.pages) {
+			text.push("")
+		}
+		// Capitulos: 4 enteros en [-1, pages-1] y siempre pagina izquierda
+		// del par (par), como los marca el click derecho del libro.
+		const chapters = []
+		const chapNames = []
+		for (let i = 0; i < 4; i++) {
+			let c = -1
+			const rc = b.chapters ? b.chapters[i] : null
+			if (rc !== null && rc !== undefined && rc !== "") {
+				const n = Number(rc)
+				if (Number.isFinite(n) && n >= 0) {
+					c = Math.min(Math.floor(n), def.pages - 1)
+					if (c % 2) {
+						c--
+					}
+				}
+			}
+			chapters.push(c)
+			chapNames.push(String((b.chapNames && b.chapNames[i]) || "").slice(0, 14))
+		}
+		const slot = {
+			state: state, count: 1,
+			title: String(b.title || "").slice(0, 32),
+			text: text,
+			signed: !!b.signed,
+			signDate: Number(b.signDate) > 0 ? Number(b.signDate) : 0,
+			chapters: chapters,
+			chapNames: chapNames
+		}
+		if (b.author) {
+			slot.author = String(b.author).slice(0, 32)
+		}
+		const fs = Number(b.fontSize)
+		if (Number.isFinite(fs) && fs > 0) {
+			slot.fontSize = Math.max(9, Math.min(24, Math.round(fs)))
+		}
+		const cfs = Number(b.coverFontSize)
+		if (Number.isFinite(cfs) && cfs > 0) {
+			slot.coverFontSize = Math.max(10, Math.min(28, Math.round(cfs)))
+		}
+		return slot
+	}
+
+	// [libro:fin-puras] Hasta aqui las funciones son puras (solo tocan
+	// las tablas de items): tools/check.mjs extrae este bloque y lo
+	// prueba sin navegador.
+
+	// Titulo -> nombre de archivo seguro en cualquier SO, sin acentos ni
+	// caracteres raros ("Mi Aventura!" -> libro_mi_aventura.json).
+	function nombreArchivoLibro(title) {
+		let base = String(title || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+		base = base.replace(/[^\w\- ]+/g, " ").trim().replace(/\s+/g, "_").slice(0, 40)
+		return "libro_" + (base || "sin_titulo") + ".json"
+	}
+
+	// Descarga el libro ABIERTO como .json.  flushBookAll garantiza que
+	// lo escrito en la vista actual ya vive en el slot antes de leerlo.
+	function exportarLibro() {
+		if (!bookSlot) {
+			return
+		}
+		flushBookAll()
+		const def = ITEMS[bookSlot.state]
+		if (!def || !def.book) {
+			return
+		}
+		const blob = new Blob([JSON.stringify(serializarLibro(bookSlot), null, "\t")], { type: "application/json" })
+		const url = URL.createObjectURL(blob)
+		const a = document.createElement("a")
+		a.href = url
+		a.download = nombreArchivoLibro(bookSlot.title)
+		document.body.appendChild(a)
+		a.click()
+		a.remove()
+		setTimeout(() => URL.revokeObjectURL(url), 2000)
+		chatLog('Libro guardado en archivo: "' + (bookSlot.title || "Sin titulo") + '"')
+	}
+
+	// Texto del archivo -> slot en el inventario: valida, busca hueco
+	// (hotbar antes que main, como addItemOne) y guarda el mundo para
+	// que el libro persista aunque se salga sin pulsar Save.
+	function importarTextoLibro(txt) {
+		let raw = null
+		try {
+			raw = JSON.parse(txt)
+		} catch (e) {
+			alert("El archivo no es un libro de VOXELAND (JSON invalido).")
+			return
+		}
+		const slot = sanitizarLibro(raw)
+		if (!slot) {
+			alert("El archivo no es un libro de VOXELAND (no contiene un libro).")
+			return
+		}
+		let arr = inventory.hotbar
+		let idx = -1
+		for (let i = 0; i < arr.length && idx < 0; i++) {
+			if (!arr[i]) {
+				idx = i
+			}
+		}
+		if (idx < 0) {
+			arr = inventory.main
+			for (let i = 0; i < arr.length && idx < 0; i++) {
+				if (!arr[i]) {
+					idx = i
+				}
+			}
+		}
+		if (idx < 0) {
+			alert("No queda hueco libre en el inventario para el libro.")
+			return
+		}
+		arr[idx] = slot
+		updateHUD = true
+		chatLog('Libro importado: "' + (slot.title || "Sin titulo") + '"')
+		save()
+	}
+
+	// Boton "Importar libro" (menu Pause): abre el selector de archivos.
+	// value="" antes del click: elegir dos veces el MISMO archivo tiene
+	// que volver a disparar change.
+	function importarLibroArchivo() {
+		if (!librofile) {
+			return
+		}
+		librofile.value = ""
+		librofile.click()
+	}
+
+	// Boton "Guardar" en el pie, pegado a la esquina inferior derecha
+	// del libro (el sprite se ancla a la derecha del widget: su esquina
+	// inferior derecha es la de la caja): descarga el libro abierto
+	// como .json.  Tooltip de una linea sobre el pie al hacer hover; en
+	// pantallas estrechas cede el sitio a las flechas.
+	function drawBookSave(L) {
+		const nextImg = uiImgs.flecha_derecha
+		const ah = Math.max(18, Math.min(30, Math.round(L.sh * 0.13)))
+		const nw = imgReady(nextImg) ? Math.round(ah * nextImg.width / nextImg.height) : ah
+		const fs = Math.max(12, Math.round(ah * 0.55))
+		ctx.font = fs + 'px "Pirata One"'
+		const label = "Guardar"
+		const tw = Math.round(ctx.measureText(label).width)
+		const xR = L.sx + L.sw - 4
+		// La -> (y su zona con margen) vive hasta nextX+nw+10: si el
+		// boton no cabe a la derecha de las flechas, no se dibuja.
+		const nextX = Math.round(bookCoverCenterX(L) - nw / 2)
+		if (xR - tw - 10 < nextX + nw + 10) {
+			return
+		}
+		const hov = mouseX >= xR - tw - 10 && mouseX < xR + 4 && mouseY >= L.footY && mouseY < L.footY + L.footH
+		ctx.textAlign = "right"
+		ctx.textBaseline = "middle"
+		ctx.lineWidth = 3
+		ctx.strokeStyle = "rgba(0, 0, 0, 0.9)"
+		ctx.fillStyle = hov ? "rgb(255, 255, 230)" : "rgb(216, 214, 192)"
+		ctx.strokeText(label, xR, L.footY + L.footH / 2)
+		ctx.fillText(label, xR, L.footY + L.footH / 2)
+		if (hov) {
+			cursor("pointer")
+			const tfs = Math.max(10, Math.round(L.footH * 0.3))
+			ctx.font = tfs + 'px "Pirata One"'
+			const tip = "Descarga el libro como archivo .json"
+			ctx.strokeText(tip, xR, L.footY - Math.round(tfs * 0.9))
+			ctx.fillText(tip, xR, L.footY - Math.round(tfs * 0.9))
+		}
+		bookZones.push({ x: xR - tw - 10, y: L.footY, w: tw + 14, h: L.footH, cb: exportarLibro })
+		ctx.textAlign = "left"
+		ctx.textBaseline = "alphabetic"
+	}
+
+	// Selector de archivos: al elegir un .json se lee y se importa.
+	// El input vive oculto en index.html (#librofile).
+	const librofile = document.getElementById("librofile")
+	if (librofile) {
+		librofile.addEventListener("change", function() {
+			const file = librofile.files && librofile.files[0]
+			if (!file) {
+				return
+			}
+			file.text().then(importarTextoLibro).catch(function(e) {
+				console.error("leer archivo de libro: ", e)
+				alert("No se pudo leer el archivo del libro.")
+			})
 		})
 	}
 
