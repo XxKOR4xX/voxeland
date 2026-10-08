@@ -1283,9 +1283,9 @@ void main() {
 		if (!arbolIds) {
 			arbolIds = new Set()
 			const ids = V.blockIds || {}
-			for (const n of ["oakLog", "birchLog", "acaciaLog", "darkOakLog",
-					"jungleLog", "spruceLog", "leaves", "birchLeaves",
-					"blossomLeaves", "justLeaves", "altLeaves", "grassLeaves"]) {
+		for (const n of ["oakLog", "birchLog", "acaciaLog", "darkOakLog",
+				"jungleLog", "spruceLog", "leaves", "birchLeaves",
+				"blossomLeaves", "justLeaves", "altLeaves", "grassLeaves", "swampLeaves"]) {
 				if (typeof ids[n] === "number") arbolIds.add(ids[n])
 			}
 		}

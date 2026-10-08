@@ -42,7 +42,7 @@ const baked = texKeys.size + plantNames.length * 3 + procTexCount * (PROC_VARIAN
 console.log(`tiles horneados: <= ${baked} de ${capacity} (${texKeys.size} claves + ${plantNames.length * 3} tintes + ${procTexCount}x${PROC_VARIANTS - 1} proc + ${hojaTexCount}x${PROC_VARIANTS - 1} hojas + ${stringVarCount}x${STRING_VARIANTS - 1} b36)`)
 ok(baked <= capacity, `atlas: <= ${baked} tiles horneados <= ${capacity}`)
 ok(procTexCount > 0, `texturas ProcBlocks registradas (${procTexCount})`)
-ok(hojaTexCount === 6, `seis hojas del generador: roble, abedul, florada y sus discos (${hojaTexCount})`)
+ok(hojaTexCount === 8, `ocho hojas del generador: roble, abedul, florada, pantano y sus discos (${hojaTexCount})`)
 ok(/const STRING_FLIPS = /.test(src) && /plantTextureNames\.indexOf\(i\) < 0/.test(src),
 	"las b36 toman variantes por simetria (las plantas se quedan con las suyas)")
 
@@ -501,7 +501,7 @@ ok(vistos.size === PROC_VARIANTS, `posHash3 reparte las ${PROC_VARIANTS} variant
 		"el nucleo de la copa es un cubo de 0.75 (12 px), no el bloque entero")
 	const bushBlocks = [...blockBlock.matchAll(/\{\s*name:\s*"(leaves|birchLeaves|blossomLeaves)"[\s\S]*?bush: true/g)]
 	ok(bushBlocks.length === 3, "leaves, birchLeaves y blossomLeaves marcados como bush")
-	ok(/random\(\) < 0\.125 \? blockIds\.blossomLeaves/.test(src), "1 de cada 8 arboles sale florado")
+	ok(/especie === "roble" && dado\(\) < 0\.125/.test(src), "1 de cada 8 arboles sale florado")
 	ok(/blossomLeaves: 0\.3/.test(src), "blossomLeaves se rompe tan rapido como leaves")
 	ok(/rnd\(\) < 0\.625 \? 1 : 0/.test(src), "flores al 25% de densidad (0-1 blossom por tile, antes 2-3)")
 	ok(/0\.65 \+ rnd\(\) \* 0\.3/.test(src), "flores al 25% de tamano (0.65-0.95 px, antes 2.6-3.8)")
@@ -824,7 +824,7 @@ const proy = new Function(proySrc + "\nreturn proyectarHud")()
 	ok(/inventory\.hotbar/.test(impSrc) && /inventory\.main/.test(impSrc) && /save\(\)/.test(impSrc),
 		"importar: hueco (hotbar->main) y save() al terminar")
 	ok(/"pause", importarLibroArchivo/.test(src), "boton Importar libro en el menu pause")
-	ok(/game\.js\?v=20261007/.test(htmlSrc), "cache-buster de game.js actualizado")
+	ok(/game\.js\?v=20261008/.test(htmlSrc), "cache-buster de game.js actualizado")
 
 	// disposicion del widget: pestañas alineadas con la X, -> anclada al
 	// centro del libro cerrado (no salta al abrir) y Guardar en el pie

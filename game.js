@@ -198,6 +198,14 @@ function MineKhan() {
 		blossomLeavesDisc: function(n, v) {
 			hojaTile(n, 3001 + (v | 0), "forest", HUECOS_HOJA, FLOR_ROSA, true)
 		},
+		// Hoja del PANTANO (sauce de TreeGen): la paleta "swamp" que
+		// PALETAS_HOJA llevaba preparada para futuras especies.
+		swampLeaves: function(n, v) {
+			hojaTile(n, 4001 + (v | 0), "swamp", HUECOS_HOJA)
+		},
+		swampLeavesDisc: function(n, v) {
+			hojaTile(n, 4001 + (v | 0), "swamp", HUECOS_HOJA, null, true)
+		},
 		oakPlanks: function(n, v) { procTile(n, "planks", v) },
 		hitbox: function(n) {
 			for (let x = 0; x < 16; x++) {
@@ -581,6 +589,13 @@ function MineKhan() {
 		// 	 name: "tnt",
 		// 	 textures: ["tntBottom", "tntTop", "tntSides"]
 		// },
+	// Hoja del sauce del pantano (TreeGen).  Va al FINAL a propósito:
+	// block.id es el indice en blockData y los mundos guardados guardan
+	// ids numericos — insertarlo en medio desplazaria todos los bloques.
+	{ name: "swampLeaves",
+	  transparent: true,
+	  bush: true,
+	},
 	]
 	const BLOCK_COUNT = blockData.length;
 
@@ -1763,6 +1778,30 @@ function MineKhan() {
 			return biomeSettings.swampTreeChance
 		}
 		return biomeSettings.plainsTreeChance
+	}
+
+	// Especie de arbol de una columna y bloques con que se construye.
+	// La FORMA la genera TreeGen (png/trees/tree_gen.js, extraido del
+	// visor png/trees/generador arboles.html); aqui solo se elige la
+	// especie por bioma.  Bosque: 60% roble / 40% abedul (las mismas
+	// proporciones del arbol viejo), pantano: sauce de ramas caidas,
+	// llanura (y la isla del menu): roble.  El dado de especie es
+	// hash por columna, no el random() del chunk: no depende de
+	// cuantos arboles hayan salido antes en el chunk.
+	const ARBOL_BLOQUES = {
+		roble: { log: "oakLog", leaf: "leaves" },
+		abedul: { log: "birchLog", leaf: "birchLeaves" },
+		sauce: { log: "darkOakLog", leaf: "swampLeaves" },
+	}
+	function treeSpeciesAt(x, z) {
+		let biome = biomeAt(x, z)
+		if (biome === "swamp") {
+			return "sauce"
+		}
+		if (biome === "forest" && hash(x * 3 + 1, z * 3 + 2) > 0.2) {
+			return "abedul"
+		}
+		return "roble"
 	}
 
 	// Surface-plant density for the biome at a column. Dense grass on
@@ -4427,7 +4466,7 @@ function MineKhan() {
 		snow: 0.4,
 		obsidian: 10,
 		dirt: 0.5, grass: 0.6, sand: 0.5, gravel: 0.6, soulSand: 0.5, netherrack: 0.6,
-		leaves: 0.3, birchLeaves: 0.3, blossomLeaves: 0.3, justLeaves: 0.3, altLeaves: 0.3, grassLeaves: 0.3,
+		leaves: 0.3, birchLeaves: 0.3, blossomLeaves: 0.3, justLeaves: 0.3, altLeaves: 0.3, grassLeaves: 0.3, swampLeaves: 0.3,
 		glass: 0.4, iceBlick: 0.4, cobwebBlick: 0.4,
 		oakLog: 1.2, oakPlanks: 1.0, bookshelf: 1.0,
 		stone: 1.5, cobblestone: 1.6, mossyCobble: 1.6, smoothStone: 1.5,
@@ -4720,7 +4759,7 @@ function MineKhan() {
 	}
 
 	// Hojas (para la manzana al romperlas)
-	const LEAF_IDS = [blockIds.leaves, blockIds.birchLeaves, blockIds.blossomLeaves, blockIds.justLeaves, blockIds.altLeaves, blockIds.grassLeaves].filter(id => id !== undefined)
+	const LEAF_IDS = [blockIds.leaves, blockIds.birchLeaves, blockIds.blossomLeaves, blockIds.justLeaves, blockIds.altLeaves, blockIds.grassLeaves, blockIds.swampLeaves].filter(id => id !== undefined)
 	function esHoja(id) {
 		return LEAF_IDS.indexOf(id) !== -1
 	}
@@ -6372,7 +6411,7 @@ function MineKhan() {
 		}
 		populate() {
 			randomSeed(hash(this.x, this.z) * 210000000)
-			let wx = 0, wz = 0, ground = 0, top = 0, rand = 0, place = false
+			let wx = 0, wz = 0, ground = 0
 
 			for (let i = 0; i < 16; i++) {
 				for (let k = 0; k < 16; k++) {
@@ -6383,80 +6422,48 @@ function MineKhan() {
 				// surface (grass) — never on stone peaks, sand or riverbeds
 				let groundBlock = this.getBlock(i, ground, k) & 0xff
 				if (trees && random() < treeChanceAt(wx, wz) && groundBlock === blockIds.grass && (this.getBlock(i, ground + 1, k) & 0xff) !== blockIds.waterBlock) {
-
-						top = ground + Math.floor(4.5 + random(2.5))
-						rand = Math.floor(random(4096))
-						let tree = random() < 0.6 ? blockIds.oakLog : ++top && blockIds.birchLog
-						// Cada arbol con su copa: el abedul trae birchLeaves
-						// y 1 de cada 8 sale FLORADO (blossom rosa del
-						// generador).  random() es el del chunk: determinista.
-						let hoja = random() < 0.125 ? blockIds.blossomLeaves
-							: tree === blockIds.birchLog ? blockIds.birchLeaves : blockIds.leaves
-
-						//Center
-						for (let j = ground + 1; j <= top; j++) {
-							this.setBlock(i, j, k, tree)
-						}
-						this.setBlock(i, top + 1, k, hoja)
-						this.setBlock(i, ground, k, blockIds.dirt)
-
-						//Bottom leaves
-						for (let x = -2; x <= 2; x++) {
-							for (let z = -2; z <= 2; z++) {
-								if (x || z) {
-									if ((x * z & 7) === 4) {
-										place = rand & 1
-										rand >>>= 1
-										if (place) {
-											world.spawnBlock(wx + x, top - 2, wz + z, hoja)
-										}
-									} else {
-										world.spawnBlock(wx + x, top - 2, wz + z, hoja)
-									}
-								}
-							}
-						}
-
-						//2nd layer leaves
-						for (let x = -2; x <= 2; x++) {
-							for (let z = -2; z <= 2; z++) {
-								if (x || z) {
-									if ((x * z & 7) === 4) {
-										place = rand & 1
-										rand >>>= 1
-										if (place) {
-											world.spawnBlock(wx + x, top - 1, wz + z, hoja)
-										}
-									} else {
-										world.spawnBlock(wx + x, top - 1, wz + z, hoja)
-									}
-								}
-							}
-						}
-
-						//3rd layer leaves
-						for (let x = -1; x <= 1; x++) {
-							for (let z = -1; z <= 1; z++) {
-								if (x || z) {
-									if (x & z) {
-										place = rand & 1
-										rand >>>= 1
-										if (place) {
-											world.spawnBlock(wx + x, top, wz + z, hoja)
-										}
-									} else {
-										world.spawnBlock(wx + x, top, wz + z, hoja)
-									}
-								}
-							}
-						}
-
-						//Top leaves
-						world.spawnBlock(wx + 1, top + 1, wz, hoja)
-						world.spawnBlock(wx, top + 1, wz - 1, hoja)
-						world.spawnBlock(wx, top + 1, wz + 1, hoja)
-						world.spawnBlock(wx - 1, top + 1, wz, hoja)
+					// Arbol PROCEDURAL de TreeGen (png/trees/tree_gen.js,
+					// extraido del visor png/trees/generador arboles.html).
+					// La semilla sale de la COLUMNA: la misma forma venga
+					// del chunk que venga, y las copas que cruzan al vecino
+					// via spawnBlock encajan siempre.
+					const semilla = Math.floor(Math.abs(hash(wx, wz)) * 2147483647)
+					const dado = TreeGen.mulberry32(semilla ^ 0x9e3779b9)
+					const especie = treeSpeciesAt(wx, wz)
+					const bloques = ARBOL_BLOQUES[especie]
+					// 1 de cada 8 robles sale FLORADO (blossom rosa), como
+					// el arbol viejo.  El dado va aparte del PRNG de la
+					// estructura: la copa no cambia la forma de las ramas.
+					let hoja = blockIds[bloques.leaf]
+					if (especie === "roble" && dado() < 0.125) {
+						hoja = blockIds.blossomLeaves
 					}
+					// Altura con variacion por arbol: refH queda fijo, asi
+					// que los ejemplares bajos sacan la copa escalada.
+					const P = Object.assign({}, TreeGen.WORLDGEN[especie])
+					P.height += Math.floor(dado() * (P.heightVar + 1))
+					const tronco = blockIds[bloques.log]
+					const vox = TreeGen.generateTree(P, semilla)
+					// Volcado: el tronco nace en (0,0,0) -> base = ground+1.
+					// Dentro del chunk el leño pisa sin piedad (como el
+					// tronco viejo) y las hojas solo van sobre aire, para
+					// no rebajar laderas; fuera, spawnBlock ya trae esa
+					// regla (y no toca el agua del pantano).
+					const cx = this.x >> 4, cz = this.z >> 4
+					for (const o of vox.values()) {
+						if (o.t === 2) continue // enredadera: aun sin bloque
+						const X = wx + o.x, Y = ground + 1 + o.y, Z = wz + o.z
+						const id = o.t === 0 ? tronco : hoja
+						if ((X >> 4) === cx && (Z >> 4) === cz) {
+							if (o.t === 0 || !this.getBlock(X & 15, Y, Z & 15)) {
+								this.setBlock(X & 15, Y, Z & 15, id)
+							}
+						} else {
+							world.spawnBlock(X, Y, Z, id)
+						}
+					}
+					this.setBlock(i, ground, k, blockIds.dirt)
+				}
 
 					// Surface plants (crossed grass). Runs after the tree pass,
 					// so trunks and their dirt pads are skipped for free.
