@@ -116,7 +116,10 @@ window.WORLD_PARAMS = {
 	},
 
 	bosque: {
-		arboles: 0.02,           // Densidad de árboles (bosque propiamente)
+		arboles: 0.008,          // Densidad de árboles: probabilidad por COLUMNA.  populate() la
+		                         // agrupa por celda de la rejilla (x64, tope 1) y además respeta la
+		                         // distancia mínima entre árboles — 0.008 deja ~2 por chunk con
+		                         // claros amplios; a 0.02 la rejilla se satura y sale un árbol por celda.
 		boostLagos: 1.5,         // Lagos más frecuentes que en llanuras (medido: ~2% del bosque es agua)
 	},
 

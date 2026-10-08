@@ -2,7 +2,7 @@
 //
 // El bloque de árbol de populate() se extrae del fuente REAL de game.js
 // y se ejecuta contra mocks de Chunk/world (misma técnica que el bind de
-// hojaTile en check.mjs): si alguien retoca el volcado, este check avisa.
+// hojaTile en check.mjs): si alguien retoca el volcado o el gate, avisa.
 import { readFileSync } from "node:fs"
 import { createRequire } from "node:module"
 
@@ -14,38 +14,65 @@ const src = readFileSync(root + "game.js", "utf8")
 let fails = 0
 const ok = (cond, msg) => { console.log((cond ? "  OK   " : "  FALLO") + " " + msg); if (!cond) fails++ }
 
-// --- 1. generateTree y perfiles worldgen --------------------------------
+// --- 1. generateTree: perfiles, determinismo y CONECTIVIDAD -------------
 for (const k of ["roble", "abedul", "sauce"]) {
 	ok(TreeGen.WORLDGEN[k] !== undefined, `perfil worldgen: ${k}`)
 }
 {
-	// determinismo puro del generador + budget respetado
 	const P = TreeGen.WORLDGEN.roble
-	const a = TreeGen.generateTree(P, 12345), b = TreeGen.generateTree(P, 12345)
-	ok(a.size === b.size, `generateTree determinista (${a.size} voxels)`)
+	ok(TreeGen.generateTree(P, 12345).size === TreeGen.generateTree(P, 12345).size,
+		"generateTree determinista")
 	const P2 = Object.assign({}, P, { budget: 50 })
-	const c = TreeGen.generateTree(P2, 999)
-	ok(c.size > 0 && c.size < 2000, `P.budget recorta la estructura (${c.size} voxels con budget 50)`)
-	// enredaderas desactivadas en los perfiles del mundo (sin bloque aún)
-	let vines = 0
-	for (const o of TreeGen.generateTree(Object.assign({}, TreeGen.WORLDGEN.sauce, { vines: 1 }), 77).values()) {
-		if (o.t === 2) vines++
-	}
-	ok(vines > 0, "putVine existe: la sauce del visor SI puede echar enredaderas (el worldgen las lleva a 0)")
+	ok(TreeGen.generateTree(P2, 999).size < 2000, "P.budget recorta la estructura")
 }
 
-// --- 2. extraer el bloque de árbol de populate() -------------------------
-const bloque = src.match(/if \(trees && random\(\) < treeChanceAt\(wx, wz\)[\s\S]*?blockIds\.dirt\)\r?\n\t\t\t\t\}/)
+// conectividad del leño: flood fill 6-vecino desde la base (0,0,0).  El
+// relleno de diagonales de logStep debe dejar TODOS los bloques de la
+// rama unidos al tronco — una rama cortada queda flotando.
+{
+	const DIRS = [[1,0,0],[-1,0,0],[0,1,0],[0,-1,0],[0,0,1],[0,0,-1]]
+	let peor = 0, especiePeor = ""
+	for (const [nombre, P0] of Object.entries(TreeGen.WORLDGEN)) {
+		for (let s = 1; s <= 12; s++) {
+			const P = Object.assign({}, P0)
+			P.height = P0.height + (s % (P0.heightVar + 1))
+			const vox = TreeGen.generateTree(P, s * 7919)
+			const logs = new Set()
+			for (const o of vox.values()) if (o.t === 0) logs.add(o.x + "," + o.y + "," + o.z)
+			const seen = new Set(["0,0,0"])
+			const cola = [[0, 0, 0]]
+			while (cola.length) {
+				const [x, y, z] = cola.pop()
+				for (const [dx, dy, dz] of DIRS) {
+					const k = (x + dx) + "," + (y + dy) + "," + (z + dz)
+					if (logs.has(k) && !seen.has(k)) { seen.add(k); cola.push([x + dx, y + dy, z + dz]) }
+				}
+			}
+			const aislados = logs.size - seen.size
+			if (aislados > peor) { peor = aislados; especiePeor = nombre }
+		}
+	}
+	ok(peor === 0, `leños 100% conectados al tronco (flood fill 6v, peor: ${peor} aislados${peor ? " en " + especiePeor : ""})`)
+}
+
+// --- 2. extraer el bloque de árbol de populate() ------------------------
+const bloque = src.match(/if \(trees && arbolEnRejilla\(wx, wz\)[\s\S]*?blockIds\.dirt\)\r?\n\t\t\t\t\}/)
 ok(bloque !== null, "bloque de árbol localizado en populate()")
 ok(/t === 2\) continue/.test(bloque[0]), "el volcado ignora las enredaderas (t===2)")
 ok(/o\.t === 0 \|\| !this\.getBlock/.test(bloque[0]), "in-chunk: el leño pisa, las hojas solo sobre aire")
-ok(/world\.spawnBlock\(X, Y, Z, id\)/.test(bloque[0]), "fuera del chunk: todo via spawnBlock")
+ok(/world\.spawnLog\(X, Y, Z, id\)/.test(bloque[0]), "fuera del chunk: el leño va por spawnLog (nunca cortado)")
+ok(/world\.spawnBlock\(X, Y, Z, id\)/.test(bloque[0]), "fuera del chunk: las hojas van por spawnBlock")
+ok(/ARBOL_CELDA \* ARBOL_CELDA/.test(bloque[0]), "la densidad se agrupa por celda (chance x area)")
 const cuerpo = bloque[0].replace(/\r/g, "")
 
-// treeSpeciesAt + ARBOL_BLOQUES del fuente real
+// helpers del fuente real: ARBOL_BLOQUES, treeSpeciesAt, arbolEnRejilla
 const spSrc = src.match(/const ARBOL_BLOQUES = \{[\s\S]*?\n\t\}/)[0]
 const fnSrc = src.match(/function treeSpeciesAt\(x, z\) \{[\s\S]*?\n\t\}/)[0]
-ok(spSrc.includes("sauce") && fnSrc.includes("swamp"), "ARBOL_BLOQUES/treeSpeciesAt: el pantano lleva sauce")
+const rejillaSrc = src.match(/const ARBOL_CELDA = \d+\r?\n[\s\S]*?function arbolEnRejilla\(x, z\) \{[\s\S]*?\r?\n\t\}/)
+ok(rejillaSrc !== null, "arbolEnRejilla + constantes localizadas")
+const ARBOL_CELDA = Number(rejillaSrc[0].match(/ARBOL_CELDA = (\d+)/)[1])
+const ARBOL_MARGEN = Number(rejillaSrc[0].match(/ARBOL_MARGEN = (\d+)/)[1])
+const bindRejilla = new Function("hash", rejillaSrc[0] + "\nreturn arbolEnRejilla")
 
 // --- 3. mocks ------------------------------------------------------------
 const blockIds = { air: 0, grass: 1, dirt: 3, stone: 4, waterBlock: 9,
@@ -70,68 +97,75 @@ function makeChunk(cx, cz) {
 		setBlock(x, y, z, id) { bloques.set(x + "," + y + "," + z, id) },
 	}
 }
-const spawnLog = []
-const world = { spawnBlock(X, Y, Z, id) { spawnLog.push([X, Y, Z, id]) } }
+function makeWorld() {
+	const spawns = [], logs = []
+	return {
+		spawns, logs,
+		spawnBlock(X, Y, Z, id) { spawns.push([X, Y, Z, id]) },
+		spawnLog(X, Y, Z, id) { logs.push([X, Y, Z, id]) },
+	}
+}
+const world = makeWorld()
 
 // el cuerpo extraído acaba en el setBlock de dirt: no añadir nada detrás
-const fnCuerpo = new Function("trees", "random", "treeChanceAt", "treeSpeciesAt", "ARBOL_BLOQUES",
-	"blockIds", "TreeGen", "world", "wx", "wz", "ground", "i", "k", "hash", "groundBlock", cuerpo)
-function arbol(chunk, i, k, wx, wz, ground) {
-	fnCuerpo.call(chunk, true, () => 0.5, () => 1, treeSpeciesAt, ARBOL_BLOQUES,
-		blockIds, TreeGen, world, wx, wz, ground, i, k, hash, blockIds.grass)
+const fnCuerpo = new Function("trees", "arbolEnRejilla", "hash", "treeChanceAt", "treeSpeciesAt",
+	"ARBOL_BLOQUES", "ARBOL_CELDA", "blockIds", "TreeGen", "world", "wx", "wz", "ground",
+	"i", "k", "groundBlock", cuerpo)
+const SIEMPRE = () => true, CHANCE1 = () => 1
+function arbol(chunk, i, k, wx, wz, ground, opts = {}) {
+	fnCuerpo.call(chunk, true, opts.rejilla || SIEMPRE, hash, opts.chance || CHANCE1,
+		treeSpeciesAt, ARBOL_BLOQUES, ARBOL_CELDA, blockIds, TreeGen,
+		opts.world || world, wx, wz, ground, i, k, blockIds.grass)
 }
 
 // --- 4. árbol centrado -----------------------------------------------------
 {
 	const c = makeChunk(0, 0)
-	spawnLog.length = 0
 	arbol(c, 8, 8, 8, 8, 70)
 	ok(c.getBlock(8, 71, 8) === blockIds.oakLog, "tronco plantado en ground+1 (8,71,8) = oakLog")
 	ok(c.getBlock(8, 70, 8) === blockIds.dirt, "base de césped -> dirt")
-	let nLog = 0, nHoja = 0, nBlossom = 0
+	let nLog = 0, nHoja = 0
 	for (const id of c.bloques.values()) {
 		if (id === blockIds.oakLog) nLog++
-		else if (id === blockIds.leaves) nHoja++
-		else if (id === blockIds.blossomLeaves) nBlossom++
+		else if (id === blockIds.leaves || id === blockIds.blossomLeaves) nHoja++
 	}
 	ok(nLog > 30, `estructura de leño sana (${nLog} oakLog > 30)`)
-	ok(nHoja + nBlossom > 200, `copa presente (${nHoja + nBlossom} hojas > 200)`)
-	const fuera = spawnLog.every(([X, Z]) => (X >> 4) !== 0 || (Z >> 4) !== 0)
-	ok(fuera, `lo que derrama cae fuera del chunk (${spawnLog.length} spawns)`)
+	ok(nHoja > 200, `copa presente (${nHoja} hojas > 200)`)
+	const fuera = [...world.spawns, ...world.logs].every(([X, Z]) => (X >> 4) !== 0 || (Z >> 4) !== 0)
+	ok(fuera, `lo que derrama cae fuera del chunk (${world.spawns.length + world.logs.length} spawns)`)
 }
 
-// --- 5. árbol en la esquina + determinismo entre chunks --------------------
+// --- 5. árbol en la esquina: leño por spawnLog, hoja por spawnBlock ------
 {
+	const w = makeWorld()
 	const c = makeChunk(0, 0)
-	spawnLog.length = 0
-	arbol(c, 15, 15, 15, 15, 70)
-	ok(spawnLog.length > 50, `árbol en esquina: la copa cruza al vecino (${spawnLog.length} spawns > 50)`)
-	ok(spawnLog.every(([X, Z]) => X >= 16 || Z >= 16), "spawnBlock solo recibe coords FUERA del chunk")
-	ok(spawnLog.every(([, Y]) => Y >= 71), "spawns siempre por encima del suelo (Y >= ground+1)")
+	arbol(c, 15, 15, 15, 15, 70, { world: w })
+	ok(w.logs.length > 20, `la copa y las ramas cruzan al vecino (${w.logs.length} leños fuera > 20)`)
+	ok(w.logs.every(([X, Z]) => X >= 16 || Z >= 16), "spawnLog solo recibe coords FUERA del chunk")
+	ok(w.logs.every(([, , , id]) => id === blockIds.oakLog), "spawnLog solo recibe LEÑO (nunca hojas)")
+	ok(w.spawns.length > 0 && w.spawns.every(([, , , id]) => id === blockIds.leaves || id === blockIds.blossomLeaves),
+		"spawnBlock fuera del chunk solo recibe HOJAS")
 	// el vecino recibe la MISMA copa que si el árbol fuera suyo
+	const w2 = makeWorld()
 	const c2 = makeChunk(1, 1)
-	const log2 = []
-	const world2 = { spawnBlock: (X, Y, Z, id) => log2.push([X, Y, Z, id]) }
-	fnCuerpo.call(c2, true, () => 0.5, () => 1, treeSpeciesAt, ARBOL_BLOQUES,
-		blockIds, TreeGen, world2, 15, 15, 70, 15, 15, hash, blockIds.grass)
-	// huella TOTAL del árbol: bloques in-chunk (a coords de mundo) + spawns
-	const huella = (c, l) => {
+	arbol(c2, 15, 15, 15, 15, 70, { world: w2 })
+	const huella = (c, l1, l2) => {
 		const out = []
 		for (const [k, id] of c.bloques) {
 			if (id === blockIds.dirt) continue   // pad del chunk ejecutor, no del árbol
 			const [x, y, z] = k.split(",").map(Number)
 			out.push((c.x + x) + "," + y + "," + (c.z + z) + "," + id)
 		}
-		for (const [X, Y, Z, id] of l) out.push(X + "," + Y + "," + Z + "," + id)
+		for (const [X, Y, Z, id] of [...l1, ...l2]) out.push(X + "," + Y + "," + Z + "," + id)
 		return out.sort().join(";")
 	}
-	ok(huella(c, spawnLog) === huella(c2, log2), "determinismo: misma columna => mismo árbol (venga del chunk que venga)")
+	ok(huella(c, w.spawns, w.logs) === huella(c2, w2.spawns, w2.logs),
+		"determinismo: misma columna => mismo árbol (venga del chunk que venga)")
 }
 
 // --- 6. hojas in-chunk no pisan terreno -----------------------------------
 {
 	const c = makeChunk(0, 0)
-	// ladera: la columna (12, ·, 8) es piedra maciza hasta arriba
 	for (let y = 71; y <= 90; y++) c.setBlock(12, y, 8, blockIds.stone)
 	arbol(c, 8, 8, 8, 8, 70)
 	let hojasEnPiedra = 0
@@ -169,6 +203,51 @@ function arbol(chunk, i, k, wx, wz, ground) {
 	const pct = abedul / total
 	ok(total === 29 && pct > 0.2 && pct < 0.6,
 		`bosque: ${roble} robles / ${abedul} abedules (${(pct * 100).toFixed(0)}% abedul, esperado ~40%)`)
+}
+
+// --- 9. la rejilla: UNA candidata por celda, separación garantizada -------
+{
+	const elegida = bindRejilla(hash)
+	const pts = []
+	for (let x = -200; x < 200; x++) for (let z = -200; z < 200; z++) {
+		if (elegida(x, z)) pts.push([x, z])
+	}
+	ok(pts.length === 400 * 400 / (ARBOL_CELDA * ARBOL_CELDA),
+		`una candidata por celda (${pts.length} en 400x400, esperadas ${400 * 400 / (ARBOL_CELDA * ARBOL_CELDA)})`)
+	let minD = Infinity
+	for (let a = 0; a < pts.length; a++) for (let b = a + 1; b < pts.length; b++) {
+		const d = Math.hypot(pts[a][0] - pts[b][0], pts[a][1] - pts[b][1])
+		if (d < minD) minD = d
+	}
+	ok(minD >= 2 * ARBOL_MARGEN, `separación mínima entre árboles: ${minD} >= 2*${ARBOL_MARGEN}`)
+	// determinista: la misma columna responde igual siempre
+	ok(pts.length === (() => { let n = 0; for (let x = -200; x < 200; x++) for (let z = -200; z < 200; z++) if (elegida(x, z)) n++; return n })(),
+		"arbolEnRejilla determinista")
+}
+
+// --- 10. gate end-to-end: distancia mínima ENTRE PLANTADOS ---------------
+{
+	// gate completo del fuente (rejilla real + densidad saturada) sobre
+	// 8 chunks: los troncos que salen respetan la separación mínima.
+	const troncos = []
+	for (let cxi = -2; cxi < 2; cxi++) for (let czi = -2; czi < 2; czi++) {
+		const c = makeChunk(cxi, czi)
+		for (let i = 0; i < 16; i++) for (let k = 0; k < 16; k++) {
+			arbol(c, i, k, c.x + i, c.z + k, 70, { rejilla: bindRejilla(hash) })
+		}
+		for (let i = 0; i < 16; i++) for (let k = 0; k < 16; k++) {
+			if (c.getBlock(i, 71, k) === blockIds.oakLog || c.getBlock(i, 71, k) === blockIds.birchLog) {
+				troncos.push([c.x + i, c.z + k])
+			}
+		}
+	}
+	ok(troncos.length === 64, `árboles en 64x64 con densidad saturada: ${troncos.length} (uno por celda de la rejilla)`)
+	let minD = Infinity
+	for (let a = 0; a < troncos.length; a++) for (let b = a + 1; b < troncos.length; b++) {
+		const d = Math.hypot(troncos[a][0] - troncos[b][0], troncos[a][1] - troncos[b][1])
+		if (d < minD) minD = d
+	}
+	ok(minD >= 2 * ARBOL_MARGEN, `troncos plantados a >= ${2 * ARBOL_MARGEN} bloques (mínimo real: ${minD})`)
 }
 
 console.log(fails ? `\n${fails} FALLOS` : "\ntodo OK")

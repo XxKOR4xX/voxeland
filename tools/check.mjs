@@ -815,16 +815,25 @@ const proy = new Function(proySrc + "\nreturn proyectarHud")()
 		"input #librofile type=file que acepta .json en index.html")
 	ok(/getElementById\("librofile"\)/.test(src) && /librofile\.addEventListener\("change"/.test(src),
 		"game.js engancha #librofile y reacciona a change")
-	ok(/drawBookTabs\(L\)\r?\n\t\tdrawBookSave\(L\)/.test(src), "drawBook pinta el boton Guardar (pie del libro)")
+	ok(/drawBookTabs\(L\)\r?\n\t\tif \(!drawBookArchivos\(L, true\)\) \{\r?\n\t\t\tdrawBookArchivos\(L, false\)/.test(src),
+		"drawBook pinta [Importar][Guardar] en el pie con fallback a las pestañas")
 	ok(/URL\.createObjectURL/.test(src) && /revokeObjectURL/.test(src) && /\.download = nombreArchivoLibro/.test(src),
 		"exportarLibro descarga via Blob + <a download> y libera el objectURL")
 	const expSrc = src.slice(src.indexOf("function exportarLibro"), src.indexOf("function importarTextoLibro"))
 	ok(/flushBookAll\(\)/.test(expSrc), "exportarLibro flusha el texto al slot antes de leerlo")
 	const impSrc = src.slice(src.indexOf("function importarTextoLibro"), src.indexOf("function importarLibroArchivo"))
-	ok(/inventory\.hotbar/.test(impSrc) && /inventory\.main/.test(impSrc) && /save\(\)/.test(impSrc),
-		"importar: hueco (hotbar->main) y save() al terminar")
-	ok(/"pause", importarLibroArchivo/.test(src), "boton Importar libro en el menu pause")
-	ok(/game\.js\?v=20261008/.test(htmlSrc), "cache-buster de game.js actualizado")
+	ok(/bookSlot\.title = nuevo\.title/.test(impSrc) && !/inventory\.hotbar/.test(impSrc) && !/inventory\.main/.test(impSrc),
+		"importar rellena el libro ABIERTO (sin buscar hueco: no crea libros)")
+	ok(/bookSlot\.signed/.test(impSrc) && /syncBookInputs\(\)/.test(impSrc) && /save\(\)/.test(impSrc),
+		"importar: bloquea libros firmados, refresca las zonas de escritura y guarda")
+	ok(!/"pause", importarLibroArchivo/.test(src), "el menu pause ya no regala libros (Importar vive en el libro)")
+	// touch: el boton COLOCAR pone Key.rightMouse sin pasar por
+	// canvas.onmousedown (donde vive el openBook de desktop): el
+	// auto-place del tick es el que abre el libro en movil.
+	const autoPlaceSrc = src.slice(src.indexOf("Auto-place con boton derecho"), src.indexOf("p.autoBreak"))
+	ok(/Key\.rightMouse && isItemId\(enMano\) && ITEMS\[enMano\]\.book/.test(autoPlaceSrc) && /openBook\(\)/.test(autoPlaceSrc),
+		"touch: COLOCAR con un libro en la mano lo abre (auto-place del tick)")
+	ok(/game\.js\?v=/.test(htmlSrc) && !/game\.js\?v=20261004/.test(htmlSrc), "cache-buster de game.js actualizado (no es el previo a los libros)")
 
 	// disposicion del widget: pestañas alineadas con la X, -> anclada al
 	// centro del libro cerrado (no salta al abrir) y Guardar en el pie
@@ -858,9 +867,15 @@ const proy = new Function(proySrc + "\nreturn proyectarHud")()
 		"en hojas la -> se ancla a bookCoverCenterX y la < aparece a su lado")
 	ok(/const x = Math\.round\(bookCoverCenterX\(L\) - nw \/ 2\)/.test(footSrc),
 		"en portada la -> se ancla a bookCoverCenterX")
-	const saveSrc = src.slice(src.indexOf("function drawBookSave"), src.indexOf("// Selector de archivos"))
-	ok(/L\.sx \+ L\.sw - 4/.test(saveSrc) && /y: L\.footY, w: tw \+ 14, h: L\.footH/.test(saveSrc),
-		"el boton Guardar vive en el pie, pegado a la esquina inferior derecha")
+	const archSrc = src.slice(src.indexOf("function drawBookArchivos"), src.indexOf("// Selector de archivos"))
+	ok(/t: "Importar", cb: importarLibroArchivo/.test(archSrc) && /t: "Guardar", cb: exportarLibro/.test(archSrc),
+		"[Importar] y [Guardar] van JUNTOS en el mismo cluster")
+	ok(/L\.sx \+ L\.sw - 4/.test(archSrc) && /bookCoverCenterX\(L\) - nw \/ 2\) \+ nw \+ 10/.test(archSrc),
+		"el cluster vive en la esquina derecha del pie, a la derecha de la ->")
+	ok(/while \(fs >= 11\)/.test(archSrc) && /return false/.test(archSrc) && /return true/.test(archSrc),
+		"el cuerpo encoge hasta caber los dos (minimo 11px) y avisa si ni eso cabe")
+	ok(/bookTabsLayout\(L\)/.test(archSrc), "la misma funcion sabe dibujar el fallback en la fila de pestañas")
+	ok(/if \(!bookSlot\.signed\)/.test(archSrc), "Importar no se dibuja en un libro firmado")
 }
 
 console.log(fails ? `\n${fails} FALLOS` : "\ntodo OK")

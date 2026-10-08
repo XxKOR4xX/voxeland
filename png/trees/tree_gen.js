@@ -52,19 +52,19 @@
 	    const k=K(x,y,z); if(vox.has(k))return false;
 	    vox.set(k,{x,y,z,t:2}); return true;
 	  };
-	  function logStep(c,pv){
-	    const q=[Math.round(c[0]),Math.round(c[1]),Math.round(c[2])];
-	    if(pv){
-	      const dx=q[0]-pv[0],dy=q[1]-pv[1],dz=q[2]-pv[2];
-	      if(Math.abs(dx)+Math.abs(dy)+Math.abs(dz)>1){
-	        if(dy!==0) putLog(pv[0],q[1],q[2]);
-	        if(dx!==0&&dz!==0) putLog(q[0],q[1],pv[2]);
-	        else if(dy===0) putLog(q[0],q[1],pv[2]);
-	      }
-	    }
-	    putLog(q[0],q[1],q[2]);
-	    return q;
-	  }
+  function logStep(c,pv){
+    const q=[Math.round(c[0]),Math.round(c[1]),Math.round(c[2])];
+    if(pv){
+      const dx=q[0]-pv[0],dy=q[1]-pv[1],dz=q[2]-pv[2];
+      if(Math.abs(dx)+Math.abs(dy)+Math.abs(dz)>1){
+        if(dy!==0) putLog(pv[0],q[1],pv[2]);
+        if(dx!==0&&dz!==0) putLog(q[0],q[1],pv[2]);
+        else if(dy===0) putLog(q[0],q[1],pv[2]);
+      }
+    }
+    putLog(q[0],q[1],q[2]);
+    return q;
+  }
 
 	  // Los árboles bajos (jóvenes) tienen la copa a escala de su altura
 	  const sizeF=Math.max(0.4,Math.min(1,P.height/(P.refH||P.height)));

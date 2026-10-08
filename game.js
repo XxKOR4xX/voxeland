@@ -1312,7 +1312,7 @@ function MineKhan() {
 		swampFlattenRamp: wp("pantano", "rampa", 0.08), // Humidity width of the flattening ramp: how fast the swamp reaches full flat inside the biome
 		desertDryness: wp("clima", "sequedadDesierto", 0.35), // Subtropical drying: heat suppresses humidity (coherent deserts, no forest slicing)
 		desertTreeChance: wp("desierto", "arboles", 0),
-		forestTreeChance: wp("bosque", "arboles", 0.02),
+		forestTreeChance: wp("bosque", "arboles", 0.008),
 		swampTreeChance: wp("pantano", "arboles", 0.01),
 		plainsTreeChance: wp("llanuras", "arboles", 0.002),
 		weedDensity: wp("vegetacion", "densidad", 0.3),
@@ -1802,6 +1802,26 @@ function MineKhan() {
 			return "abedul"
 		}
 		return "roble"
+	}
+
+	// Distancia minima entre arboles: el mundo se cuadricula en celdas
+	// de ARBOL_CELDA bloques y cada celda reserva UNA sola posicion en
+	// su zona central (a ARBOL_MARGEN de los cuatro bordes).  Solo esa
+	// columna puede llevar arbol: dos arboles, incluso de celdas
+	// vecinas, quedan como minimo a 2*ARBOL_MARGEN bloques — ni troncos
+	// pegados ni copas fundidas en un solo mazacote.  La posicion sale
+	// del hash de la CELDA (no del random() del chunk): el candidato es
+	// el mismo venga el chunk que venga.  La densidad se CONSERVA: la
+	// probabilidad por columna de biome-params se agrupa por celda en
+	// el gate de populate (chance * area de celda, tope 1).
+	const ARBOL_CELDA = 8
+	const ARBOL_MARGEN = 3
+	function arbolEnRejilla(x, z) {
+		const cX = Math.floor(x / ARBOL_CELDA), cZ = Math.floor(z / ARBOL_CELDA)
+		const span = ARBOL_CELDA - 2 * ARBOL_MARGEN + 1
+		const px = cX * ARBOL_CELDA + ARBOL_MARGEN + Math.floor(Math.abs(hash(cX * 31 + 17, cZ * 33 + 19)) * span)
+		const pz = cZ * ARBOL_CELDA + ARBOL_MARGEN + Math.floor(Math.abs(hash(cX * 37 + 23, cZ * 39 + 29)) * span)
+		return x === px && z === pz
 	}
 
 	// Surface-plant density for the biome at a column. Dense grass on
@@ -6421,12 +6441,16 @@ function MineKhan() {
 					// FOREST (built from plains): trees grow ONLY on the plains
 				// surface (grass) — never on stone peaks, sand or riverbeds
 				let groundBlock = this.getBlock(i, ground, k) & 0xff
-				if (trees && random() < treeChanceAt(wx, wz) && groundBlock === blockIds.grass && (this.getBlock(i, ground + 1, k) & 0xff) !== blockIds.waterBlock) {
+				if (trees && arbolEnRejilla(wx, wz)
+						&& Math.abs(hash(wx * 7 + 101, wz * 11 + 103)) < Math.min(1, treeChanceAt(wx, wz) * ARBOL_CELDA * ARBOL_CELDA)
+						&& groundBlock === blockIds.grass && (this.getBlock(i, ground + 1, k) & 0xff) !== blockIds.waterBlock) {
 					// Arbol PROCEDURAL de TreeGen (png/trees/tree_gen.js,
 					// extraido del visor png/trees/generador arboles.html).
 					// La semilla sale de la COLUMNA: la misma forma venga
 					// del chunk que venga, y las copas que cruzan al vecino
-					// via spawnBlock encajan siempre.
+					// via spawnBlock encajan siempre.  El gate de arriba es
+					// la rejilla de arbolEnRejilla (distancia minima entre
+					// arboles) + el dado de densidad agrupado por celda.
 					const semilla = Math.floor(Math.abs(hash(wx, wz)) * 2147483647)
 					const dado = TreeGen.mulberry32(semilla ^ 0x9e3779b9)
 					const especie = treeSpeciesAt(wx, wz)
@@ -6447,8 +6471,11 @@ function MineKhan() {
 					// Volcado: el tronco nace en (0,0,0) -> base = ground+1.
 					// Dentro del chunk el leño pisa sin piedad (como el
 					// tronco viejo) y las hojas solo van sobre aire, para
-					// no rebajar laderas; fuera, spawnBlock ya trae esa
-					// regla (y no toca el agua del pantano).
+					// no rebajar laderas.  Fuera del chunk el leño va por
+					// spawnLog (SIEMPRE se coloca: una rama cortada en el
+					// borde quedaria flotando sin conexion al tronco) y
+					// las hojas por spawnBlock (que ya trae la regla del
+					// aire y no toca el agua del pantano).
 					const cx = this.x >> 4, cz = this.z >> 4
 					for (const o of vox.values()) {
 						if (o.t === 2) continue // enredadera: aun sin bloque
@@ -6458,6 +6485,8 @@ function MineKhan() {
 							if (o.t === 0 || !this.getBlock(X & 15, Y, Z & 15)) {
 								this.setBlock(X & 15, Y, Z & 15, id)
 							}
+						} else if (o.t === 0) {
+							world.spawnLog(X, Y, Z, id)
 						} else {
 							world.spawnBlock(X, Y, Z, id)
 						}
@@ -6928,6 +6957,37 @@ function MineKhan() {
 				chunk.setBlock(x & 15, y, z & 15, blockID, false)
 			}
 		}
+		spawnLog(x, y, z, blockID) {
+			// Como spawnBlock pero el leño SIEMPRE se coloca: si la celda
+			// del vecino ya esta ocupada (ladera, agua u otra copa) y se
+			// soltara, la rama quedaria CORTADA justo en el borde del
+			// chunk — media rama flotando sin conexion al tronco.
+			// Dentro del chunk el leño ya pisa (populate); fuera, igual.
+			// Ademas se avisa al mesher vecino a vecino: el camino con
+			// buffer de spawnBlock escribe la celda pero deja la malla
+			// vieja, y la rama nueva seria invisible hasta un remesh.
+			// Solo para el worldgen de arboles.
+			let chunkX = x >> 4
+			let chunkZ = z >> 4
+			if (!this.chunks[chunkX]) {
+				this.chunks[chunkX] = []
+			}
+			let chunk = this.chunks[chunkX][chunkZ]
+			if (!chunk) {
+				chunk = new Chunk(chunkX * 16, chunkZ * 16)
+				this.chunks[chunkX][chunkZ] = chunk
+			}
+			chunk.setBlock(x & 15, y, z & 15, blockID, false)
+			if (chunk.buffer) {
+				this.updateBlock(x - 1, y, z, true)
+				this.updateBlock(x + 1, y, z, true)
+				this.updateBlock(x, y - 1, z, true)
+				this.updateBlock(x, y + 1, z, true)
+				this.updateBlock(x, y, z - 1, true)
+				this.updateBlock(x, y, z + 1, true)
+				this.updateBlock(x, y, z, true)
+			}
+		}
 		tick() {
 			let tickStart = win.performance.now()
 			let maxChunkX = (p.x >> 4) + rdActiva()
@@ -6944,9 +7004,18 @@ function MineKhan() {
 			}
 		// Auto-place con boton derecho mantenido: SOLO en play.  El
 		// inventario y el libro corren tick() via drawPlayBackdrop y un
-		// click derecho ahi no debe colocar nada.
+		// click derecho ahi no debe colocar nada.  Con un LIBRO en la
+		// mano no hay nada que colocar: se abre.  En touch el boton
+		// COLOCAR pone Key.rightMouse sin pasar por canvas.onmousedown
+		// (donde vive el openBook del click derecho de desktop), asi
+		// que este es el unico camino que tienen los moviles.
 		if (screen === "play" && (Key.rightMouse || Key.leftMouse && Key.control) && p.lastPlace < Date.now() - 250) {
-			newWorldBlock()
+			const enMano = slotState(inventory.hotbar[inventory.hotbarSlot])
+			if (Key.rightMouse && isItemId(enMano) && ITEMS[enMano].book) {
+				openBook()
+			} else {
+				newWorldBlock()
+			}
 		}
 			if (gameMode !== "survival" && Key.leftMouse && p.autoBreak && !Key.control) {
 				changeWorldBlock(0)
@@ -7806,7 +7875,6 @@ function MineKhan() {
 			initWorldsMenu()
 			changeScene("main menu")
 		})
-		Button.add(width / 2, 475, 300, 40, "Importar libro", "pause", importarLibroArchivo, nothing, () => "Abre un archivo .json de libro exportado de VOXELAND y lo mete en el primer hueco libre del inventario.\n\nFunciona en cualquier mundo y en cualquier version: el mundo se guarda al importar.")
 		
 		// Options buttons
 		Button.add(width / 2, 455, width / 3, 40, "Back", "options", r => changeScene(previousScreen))
@@ -8398,7 +8466,8 @@ function MineKhan() {
 
 	// ------------------------------------------------------------------
 	// Escena del libro (15 variantes: 5 tonos x 3 papeles, 16 paginas):
-	// se abre con click derecho con el item en la mano.  El libro vive
+	// se abre con click derecho con el item en la mano (en touch, el
+	// boton COLOCAR: ver el auto-place del tick).  El libro vive
 	// en la ESQUINA INFERIOR DERECHA en un widget grande (~42% del
 	// area de pantalla: 65% de ancho x 65% de alto), SIN velo: el mundo
 	// se ve entero detras.  Dos vistas conmutables con pestañas:
@@ -8409,6 +8478,11 @@ function MineKhan() {
 	//     escribibles; las flechas de abajo son la unica forma de girar
 	//     par por par, y A- / A+ graduan el tamano de la letra (se
 	//     guarda por libro).
+	// Archivos .json locales del contenido (la cubierta manda: importar
+	// rellena ESTE libro, no crea ninguno nuevo): [Importar] [Guardar]
+	// JUNTOS en la esquina derecha del pie, a la derecha de las
+	// flechas; el cuerpo encoge hasta caber y, como ultimo recurso
+	// (movil apaisado), la pareja sube a la fila de pestañas.
 	// Pestañas de capitulo (max 6): click = saltar al par marcado,
 	// click derecho = marcar/desmarcar en el par actual (viven en el
 	// slot y viajan a IndexedDB con save()).  La pestana Portada usa el
@@ -8522,7 +8596,9 @@ function MineKhan() {
 		// hover/cursor se actualiza solo).
 		bookZones.length = 0
 		drawBookTabs(L)
-		drawBookSave(L)
+		if (!drawBookArchivos(L, true)) {
+			drawBookArchivos(L, false)
+		}
 		drawBookFoot(L)
 		drawBookClose(L)
 		if (bookView === "cover") {
@@ -9219,8 +9295,11 @@ function MineKhan() {
 	// fuera de el.  La identidad viaja por tono+papel (el id numerico
 	// puede desplazarse entre versiones) y sanitizarLibro reconstruye un
 	// slot valido venga de la version que venga.
-	//   - Exportar: boton "Guardar" a la izquierda de las pestañas.
-	//   - Importar: boton "Importar libro" del menu Pause -> hueco libre.
+	//   - Exportar / Importar: [Guardar] [Importar] juntos en la
+	//     esquina derecha del pie (el cuerpo encoge hasta caber; si no,
+	//     suben a la fila de pestañas).  Importar RELLENA el libro
+	//     abierto con el archivo (la cubierta manda, no se crea ningun
+	//     libro); Guardar lo descarga como .json.
 	// ------------------------------------------------------------------
 	const LIBRO_FORMATO = "voxeland.libro"
 	const LIBRO_FORMATO_V = 1
@@ -9352,10 +9431,21 @@ function MineKhan() {
 		chatLog('Libro guardado en archivo: "' + (bookSlot.title || "Sin titulo") + '"')
 	}
 
-	// Texto del archivo -> slot en el inventario: valida, busca hueco
-	// (hotbar antes que main, como addItemOne) y guarda el mundo para
-	// que el libro persista aunque se salga sin pulsar Save.
+	// Texto del archivo -> contenido del libro ABIERTO.  El libro
+	// fisico (el slot, su cubierta/state) YA existe en el juego y es el
+	// contenedor: el archivo solo trae el contenido (titulo, paginas,
+	// capitulos, firma, tamanos de letra) y NO se crea ningun libro
+	// nuevo.  Libro firmado no se sobrescribe (estilo MC).  save() al
+	// terminar para que no se pierda al salir sin pulsar Save.
 	function importarTextoLibro(txt) {
+		if (!bookSlot || screen !== "book") {
+			alert("Abre un libro para importarle un archivo.")
+			return
+		}
+		if (bookSlot.signed) {
+			alert("Este libro esta firmado: no se puede sobrescribir.")
+			return
+		}
 		let raw = null
 		try {
 			raw = JSON.parse(txt)
@@ -9363,86 +9453,159 @@ function MineKhan() {
 			alert("El archivo no es un libro de VOXELAND (JSON invalido).")
 			return
 		}
-		const slot = sanitizarLibro(raw)
-		if (!slot) {
+		const nuevo = sanitizarLibro(raw)
+		if (!nuevo) {
 			alert("El archivo no es un libro de VOXELAND (no contiene un libro).")
 			return
 		}
-		let arr = inventory.hotbar
-		let idx = -1
-		for (let i = 0; i < arr.length && idx < 0; i++) {
-			if (!arr[i]) {
-				idx = i
-			}
+		bookSlot.title = nuevo.title
+		bookSlot.text = nuevo.text
+		bookSlot.chapters = nuevo.chapters
+		bookSlot.chapNames = nuevo.chapNames
+		bookSlot.signed = nuevo.signed
+		bookSlot.signDate = nuevo.signDate
+		if (nuevo.author) {
+			bookSlot.author = nuevo.author
+		} else {
+			delete bookSlot.author
 		}
-		if (idx < 0) {
-			arr = inventory.main
-			for (let i = 0; i < arr.length && idx < 0; i++) {
-				if (!arr[i]) {
-					idx = i
-				}
-			}
+		if (nuevo.fontSize) {
+			bookSlot.fontSize = nuevo.fontSize
+		} else {
+			delete bookSlot.fontSize
 		}
-		if (idx < 0) {
-			alert("No queda hueco libre en el inventario para el libro.")
-			return
+		if (nuevo.coverFontSize) {
+			bookSlot.coverFontSize = nuevo.coverFontSize
+		} else {
+			delete bookSlot.coverFontSize
 		}
-		arr[idx] = slot
-		updateHUD = true
-		chatLog('Libro importado: "' + (slot.title || "Sin titulo") + '"')
+		// Las zonas de escritura reflejan el contenido nuevo (y el
+		// readonly si el archivo venia firmado).
+		syncBookInputs()
+		drawScreens.book()
+		chatLog('Libro importado: "' + (bookSlot.title || "Sin titulo") + '"')
 		save()
 	}
 
-	// Boton "Importar libro" (menu Pause): abre el selector de archivos.
-	// value="" antes del click: elegir dos veces el MISMO archivo tiene
-	// que volver a disparar change.
+	// Boton "Importar" (pie del libro): abre el selector de archivos
+	// para rellenar el libro ABIERTO (importarTextoLibro).  Solo existe
+	// en la escena del libro.  value="" antes del click: elegir dos
+	// veces el MISMO archivo tiene que volver a disparar change.
 	function importarLibroArchivo() {
-		if (!librofile) {
+		if (!librofile || !bookSlot || screen !== "book") {
 			return
 		}
 		librofile.value = ""
 		librofile.click()
 	}
 
-	// Boton "Guardar" en el pie, pegado a la esquina inferior derecha
-	// del libro (el sprite se ancla a la derecha del widget: su esquina
-	// inferior derecha es la de la caja): descarga el libro abierto
-	// como .json.  Tooltip de una linea sobre el pie al hacer hover; en
-	// pantallas estrechas cede el sitio a las flechas.
-	function drawBookSave(L) {
-		const nextImg = uiImgs.flecha_derecha
-		const ah = Math.max(18, Math.min(30, Math.round(L.sh * 0.13)))
-		const nw = imgReady(nextImg) ? Math.round(ah * nextImg.width / nextImg.height) : ah
-		const fs = Math.max(12, Math.round(ah * 0.55))
-		ctx.font = fs + 'px "Pirata One"'
-		const label = "Guardar"
-		const tw = Math.round(ctx.measureText(label).width)
-		const xR = L.sx + L.sw - 4
-		// La -> (y su zona con margen) vive hasta nextX+nw+10: si el
-		// boton no cabe a la derecha de las flechas, no se dibuja.
-		const nextX = Math.round(bookCoverCenterX(L) - nw / 2)
-		if (xR - tw - 10 < nextX + nw + 10) {
-			return
+	// Botones de archivo del libro: [Importar] [Guardar] JUNTOS (peticion
+	// expresa).  Importar rellena el libro ABIERTO con un archivo .json
+	// (la cubierta manda: no se crean libros nuevos) y Guardar lo
+	// descarga; en un libro firmado Importar no se dibuja (no se puede
+	// sobrescribir).
+	//   enPie = true: esquina inferior derecha del pie, a la derecha de
+	//   las flechas.  El hueco cambia mucho segun pantalla, asi que el
+	//   cuerpo de letra se encoge desde el tamano normal hasta el
+	//   minimo legible hasta que la fila entera quepa; devuelve false
+	//   si ni eso cabe (movil apaisado).
+	//   enPie = false: fila de pestañas, a la izquierda de [Portada]
+	//   (ultimo recurso).  Devuelve true.
+	function drawBookArchivos(L, enPie) {
+		const botones = []
+		if (!bookSlot.signed) {
+			botones.push({ t: "Importar", cb: importarLibroArchivo, tip: "Rellena ESTE libro con un archivo .json" })
 		}
-		const hov = mouseX >= xR - tw - 10 && mouseX < xR + 4 && mouseY >= L.footY && mouseY < L.footY + L.footH
-		ctx.textAlign = "right"
+		botones.push({ t: "Guardar", cb: exportarLibro, tip: "Descarga el libro como archivo .json" })
 		ctx.textBaseline = "middle"
 		ctx.lineWidth = 3
 		ctx.strokeStyle = "rgba(0, 0, 0, 0.9)"
-		ctx.fillStyle = hov ? "rgb(255, 255, 230)" : "rgb(216, 214, 192)"
-		ctx.strokeText(label, xR, L.footY + L.footH / 2)
-		ctx.fillText(label, xR, L.footY + L.footH / 2)
-		if (hov) {
-			cursor("pointer")
-			const tfs = Math.max(10, Math.round(L.footH * 0.3))
-			ctx.font = tfs + 'px "Pirata One"'
-			const tip = "Descarga el libro como archivo .json"
-			ctx.strokeText(tip, xR, L.footY - Math.round(tfs * 0.9))
-			ctx.fillText(tip, xR, L.footY - Math.round(tfs * 0.9))
+		if (enPie) {
+			const nextImg = uiImgs.flecha_derecha
+			const ah = Math.max(18, Math.min(30, Math.round(L.sh * 0.13)))
+			const nw = imgReady(nextImg) ? Math.round(ah * nextImg.width / nextImg.height) : ah
+			const xR = L.sx + L.sw - 4
+			// La -> (y su zona con margen) vive hasta nextX+nw+10: los
+			// botones no pueden entrar ahi.
+			const limX = Math.round(bookCoverCenterX(L) - nw / 2) + nw + 10
+			const gap = 14
+			// Cuerpo adaptativo: desde el tamano del pie hasta 11px.
+			let fs = Math.min(17, Math.max(12, Math.round(ah * 0.55)))
+			let anchos = null
+			while (fs >= 11) {
+				ctx.font = fs + 'px "Pirata One"'
+				const total = botones.reduce((s, b) => s + ctx.measureText(b.t).width, 0) + gap * (botones.length - 1)
+				if (xR - total - 10 >= limX) {
+					anchos = botones.map(b => Math.round(ctx.measureText(b.t).width))
+					break
+				}
+				fs--
+			}
+			if (!anchos) {
+				ctx.textBaseline = "alphabetic"
+				return false
+			}
+			// De derecha a izquierda: Guardar en la esquina, Importar a
+			// su lado (pegados, por eso el cluster va junto).
+			ctx.textAlign = "right"
+			let x = xR
+			for (let i = botones.length - 1; i >= 0; i--) {
+				const b = botones[i]
+				const bw = anchos[i]
+				const hov = mouseX >= x - bw - 10 && mouseX < x + 4 && mouseY >= L.footY && mouseY < L.footY + L.footH
+				ctx.fillStyle = hov ? "rgb(255, 255, 230)" : "rgb(216, 214, 192)"
+				ctx.strokeText(b.t, x, L.footY + L.footH / 2)
+				ctx.fillText(b.t, x, L.footY + L.footH / 2)
+				bookZones.push({ x: x - bw - 10, y: L.footY, w: bw + 14, h: L.footH, cb: b.cb })
+				if (hov) {
+					cursor("pointer")
+					const tfs = Math.max(10, Math.round(L.footH * 0.3))
+					ctx.font = tfs + 'px "Pirata One"'
+					ctx.strokeText(b.tip, x, L.footY - Math.round(tfs * 0.9))
+					ctx.fillText(b.tip, x, L.footY - Math.round(tfs * 0.9))
+					ctx.font = fs + 'px "Pirata One"'
+				}
+				x -= bw + gap
+			}
+			ctx.textAlign = "left"
+			ctx.textBaseline = "alphabetic"
+			return true
 		}
-		bookZones.push({ x: xR - tw - 10, y: L.footY, w: tw + 14, h: L.footH, cb: exportarLibro })
+		// Fila de pestañas: de izquierda a derecha desde el borde del
+		// widget hasta [Portada]; el primero que no cabe corta la fila.
+		const T = bookTabsLayout(L)
+		const fs = Math.max(12, Math.round(L.tabsH * 0.5))
+		const cy = Math.max(L.by + fs / 2 + 2, L.by + L.tabsH - T.th / 2)
+		let x = L.bx + 6
+		const xFin = T.x0 - 8
 		ctx.textAlign = "left"
+		for (const b of botones) {
+			ctx.font = fs + 'px "Pirata One"'
+			const bw = Math.round(ctx.measureText(b.t).width)
+			if (x + bw + 10 > xFin) {
+				break
+			}
+			const hov = mouseX >= x && mouseX < x + bw + 10 && mouseY >= L.by && mouseY < L.by + L.tabsH
+			ctx.fillStyle = hov ? "rgb(255, 255, 230)" : "rgb(216, 214, 192)"
+			ctx.strokeText(b.t, x, cy)
+			ctx.fillText(b.t, x, cy)
+			bookZones.push({ x: x - 4, y: L.by, w: bw + 14, h: L.tabsH, cb: b.cb })
+			if (hov) {
+				cursor("pointer")
+				const tfs = Math.max(10, Math.round(L.tabsH * 0.3))
+				ctx.font = tfs + 'px "Pirata One"'
+				ctx.textAlign = "center"
+				const ttw = ctx.measureText(b.tip).width
+				const tx = Math.max(ttw / 2 + 4, Math.min(x + bw / 2, width - ttw / 2 - 4))
+				ctx.strokeText(b.tip, tx, L.by + L.tabsH + 8)
+				ctx.fillText(b.tip, tx, L.by + L.tabsH + 8)
+				ctx.textAlign = "left"
+				ctx.font = fs + 'px "Pirata One"'
+			}
+			x += bw + 18
+		}
 		ctx.textBaseline = "alphabetic"
+		return true
 	}
 
 	// Selector de archivos: al elegir un .json se lee y se importa.
