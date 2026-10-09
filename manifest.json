@@ -1,0 +1,31 @@
+{
+	"id": "./index.html",
+	"name": "VoxeLand",
+	"short_name": "VoxeLand",
+	"description": "Juego voxel de mundo abierto: explora, construye y sobrevive. 0.1 Alpha.",
+	"lang": "es",
+	"start_url": "./index.html",
+	"scope": "./",
+	"display": "standalone",
+	"orientation": "landscape",
+	"background_color": "#548AB8",
+	"theme_color": "#16120E",
+	"icons": [
+		{
+			"src": "icons/icon-192.png",
+			"sizes": "192x192",
+			"type": "image/png"
+		},
+		{
+			"src": "icons/icon-512.png",
+			"sizes": "512x512",
+			"type": "image/png"
+		},
+		{
+			"src": "icons/icon-maskable-512.png",
+			"sizes": "512x512",
+			"type": "image/png",
+			"purpose": "maskable"
+		}
+	]
+}

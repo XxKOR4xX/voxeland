@@ -4,9 +4,16 @@
 <html>
 	<head>
 		<meta charset="utf-8">
-		<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+		<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
 		<title>VoxeLand 0.1 Alpha</title>
-		<link rel="shortcut icon" type="image/ico" href="https://www.minecraft.net/etc.clientlibs/minecraft/clientlibs/main/resources/favicon.ico">
+		<link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32.png">
+		<link rel="manifest" href="manifest.json">
+		<meta name="theme-color" content="#16120E">
+		<link rel="apple-touch-icon" href="icons/apple-touch-icon-180.png">
+		<meta name="mobile-web-app-capable" content="yes">
+		<meta name="apple-mobile-web-app-capable" content="yes">
+		<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+		<meta name="apple-mobile-web-app-title" content="VoxeLand">
 	</head>
 	<style>
     @import url('https://fonts.googleapis.com/css2?family=Poppins:wght@500&display=swap');
@@ -361,6 +368,40 @@
 			font-size: 11px;
 			margin-top: 6px;
 		}
+		/* Boton INSTALAR de la PWA (pwa.js lo gestiona): mismo estilo tbtn,
+		   arriba a la izquierda junto al CHAT.  La guia de instalacion
+		   (iOS o navegadores sin prompt) es un panel fijo centrado que se
+		   cierra al tocarlo. */
+		#btn-install {
+			position: absolute;
+			left: 84px;
+			top: 12px;
+			width: 72px;
+			height: 40px;
+			border-radius: 8px;
+			font-size: 10px;
+			z-index: 5;
+		}
+		#install-guia {
+			position: fixed;
+			left: 50%;
+			top: 50%;
+			transform: translate(-50%, -50%);
+			z-index: 8;
+			background: rgba(22, 18, 14, 0.95);
+			border: 1px solid rgba(255, 255, 255, 0.3);
+			border-radius: 10px;
+			padding: 14px 18px;
+			max-width: 340px;
+			line-height: 1.5;
+			font-family: "Poppins", sans-serif;
+			font-size: 14px;
+			color: white;
+			cursor: pointer;
+		}
+		#install-guia strong {
+			font-size: 16px;
+		}
 	</style>
 	<body>
 	<canvas id="overlay" tabindex="0" width="600" height="600" style="position: absolute; top: 0px; left: 0px"></canvas>
@@ -386,6 +427,7 @@
 		<div id="btn-chat" class="tctrl tbtn">CHAT</div>
 	</div>
 	<div id="btn-inventory" class="tctrl tbtn hidden">INV</div>
+	<div id="btn-install" class="tctrl tbtn hidden">INSTALAR</div>
 	<input type="text" id="chatbox" class="hidden" spellcheck="false">
 	<input type="text" id="bookcover" class="hidden" spellcheck="false" maxlength="32" placeholder="Titulo...">
 	<textarea id="bookpageL" class="hidden" spellcheck="false" maxlength="256" placeholder="Escribe aqui..."></textarea>
@@ -485,5 +527,6 @@
 <script src="identidades.js?v=20261008a"></script>
 	<script src="game.js?v=20261008f"></script>
 <script src="touch.js?v=20261008e"></script>
+<script src="pwa.js?v=1"></script>
 </body>
 </html>
